@@ -111,7 +111,7 @@ class EvalHarnessLM(LM):
         self.accelerator = MockAccelerator()
         self._rank = get_global_rank()
         self._world_size = get_world_size()
-        self.device = generator.device
+        self._device = generator.device
 
     def generate_until(self, requests: List[Instance]) -> List[str]:
         prompts, gen_args = zip(*[req.args for req in requests])
