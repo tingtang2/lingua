@@ -28,8 +28,9 @@ conda activate lingua_<date>
 use the provided script to download and prepare data from huggingface (among `fineweb_edu`, `fineweb_edu_10bt`, or `dclm_baseline_1.0`).
 This command will download the `fineweb_edu` and prepare it for training in the `./data` directory, specifying the amount of memory `terashuf` (the tool used to shuffle samples) will be allocated. By default, the number of chunks (`nchunks`) is 32. If you are running on fewer than 32 GPUs, it is recommended to set `nchunks` to 1 or to match `nchunks` with the number of GPUs (`nchunks` = NGPUs). See [here](https://github.com/facebookresearch/lingua/issues/55#issuecomment-2483643076) for more details.
 ```bash
-python setup/download_prepare_hf_data.py fineweb_edu <MEMORY> --data_dir ./data --seed 42 --nchunks <NCHUNKS>
+python setup/download_prepare_hf_data.py fineweb_edu <MEMORY> --data_dir ./data --seed 42 --nchunks <NCHUNKS> --shuffle_tmp_dir /scratch/$USER/terashuf_tmp
 ```
+If you omit `--shuffle_tmp_dir`, temporary shuffle files now default to `$TMPDIR` when it is set, or to `<data_dir>/<dataset>/terashuf_tmp` instead of `/tmp`. For large shuffles, point this directory at a filesystem with enough free space.
 to download tokenizer (here llama3), use the folowing script:
 ```bash
 python setup/download_tokenizer.py llama3 <SAVE_PATH> --api_key <HUGGINGFACE_TOKEN>

@@ -2,15 +2,19 @@
 
 import argparse
 import os
+import shlex
 import time
 import subprocess
 import requests
 from huggingface_hub import snapshot_download
 
 
-def run_command(command):
+def run_command(command, env=None, use_bash=False):
     print(f"Running: {command}")
-    subprocess.run(command, shell=True, check=True)
+    if use_bash:
+        subprocess.run(["bash", "-o", "pipefail", "-c", command], check=True, env=env)
+    else:
+        subprocess.run(command, shell=True, check=True, env=env)
 
 
 def download_dataset(repo_id, local_dir, allow_patterns):
@@ -76,7 +80,18 @@ def setup_terashuf(work_dir):
     return terashuf_dir
 
 
-def main(dataset, memory, data_dir, seed=42, nchunks=32):
+def get_terashuf_tmp_dir(src_dir, shuffle_tmp_dir=None):
+    if shuffle_tmp_dir is not None:
+        tmp_dir = shuffle_tmp_dir
+    else:
+        tmp_dir = os.environ.get("TMPDIR", os.path.join(src_dir, "terashuf_tmp"))
+
+    tmp_dir = os.path.abspath(tmp_dir)
+    os.makedirs(tmp_dir, exist_ok=True)
+    return tmp_dir
+
+
+def main(dataset, memory, data_dir, seed=42, nchunks=32, shuffle_tmp_dir=None):
     # Configuration
     repo_id = {
         "fineweb_edu": "HuggingFaceFW/fineweb-edu",
@@ -84,7 +99,8 @@ def main(dataset, memory, data_dir, seed=42, nchunks=32):
         "dclm_baseline_1.0": "mlfoundations/dclm-baseline-1.0",
         "dclm_baseline_1.0_10prct": "mlfoundations/dclm-baseline-1.0",
     }[dataset]
-    src_dir = f"{data_dir}/{dataset}"
+    data_dir = os.path.abspath(data_dir)
+    src_dir = os.path.join(data_dir, dataset)
     out_dir = f"{src_dir}_shuffled"
     os.makedirs(out_dir, exist_ok=True)
     work_dir = src_dir  # Directory of this Python file
@@ -95,11 +111,11 @@ def main(dataset, memory, data_dir, seed=42, nchunks=32):
         "dclm_baseline_1.0": ".jsonl.zst",
         "dclm_baseline_1.0_10prct": ".jsonl.zst",
     }[dataset]
-    cat_command = {
-        "fineweb_edu": "cat {}",
-        "fineweb_edu_10bt": "cat {}",
-        "dclm_baseline_1.0": "zstdcat {} && echo",
-        "dclm_baseline_1.0_10prct": "zstdcat {} && echo",
+    reader_command = {
+        "fineweb_edu": 'cat "$1"',
+        "fineweb_edu_10bt": 'cat "$1"',
+        "dclm_baseline_1.0": 'zstdcat "$1" && echo',
+        "dclm_baseline_1.0_10prct": 'zstdcat "$1" && echo',
     }[dataset]
     allow_patterns = {
         "fineweb_edu": None,
@@ -119,17 +135,24 @@ def main(dataset, memory, data_dir, seed=42, nchunks=32):
     if "fineweb" in dataset:
         parquet_to_jsonl(dataset, work_dir, src_dir, src_dir)
 
-    # Set up environment variables
-    os.environ["MEMORY"] = f"{memory}"
-    os.environ["SEED"] = f"{seed}"
+    shuffle_tmp_dir = get_terashuf_tmp_dir(src_dir, shuffle_tmp_dir)
+    print(f"Using terashuf temporary directory: {shuffle_tmp_dir}")
+
+    shuffle_env = os.environ.copy()
+    shuffle_env["MEMORY"] = f"{memory}"
+    shuffle_env["SEED"] = f"{seed}"
+    shuffle_env["TMPDIR"] = shuffle_tmp_dir
 
     # Run the original shuffling and splitting command
     terashuf_executable = os.path.join(terashuf_dir, "terashuf")
     run_command(
         f"ulimit -n 100000 && "
-        f"find {src_dir} -type f -name '*{orig_extension}' -print0 | xargs -0 -I {{}} sh -c '{cat_command}' | {terashuf_executable} | "
-        f"split -n r/{nchunks} -d --suffix-length 2 --additional-suffix {suffix} - {out_dir}/{prefix}"
-        "; trap 'echo \"Caught signal 13, exiting with code 1\"; exit 1' SIGPIPE;"
+        f"find {shlex.quote(src_dir)} -type f -name '*{orig_extension}' -print0 | "
+        f"xargs -0 -I {{}} sh -c '{reader_command}' _ {{}} | "
+        f"{shlex.quote(terashuf_executable)} | "
+        f"split -n r/{nchunks} -d --suffix-length 2 --additional-suffix {shlex.quote(suffix)} - {shlex.quote(os.path.join(out_dir, prefix))}",
+        env=shuffle_env,
+        use_bash=True,
     )
 
     # Create validation set and remove lines from chunks
@@ -149,7 +172,20 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, default="data")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--nchunks", type=int, default=32)
+    parser.add_argument(
+        "--shuffle_tmp_dir",
+        type=str,
+        default=None,
+        help="Directory used by terashuf for temporary files. Defaults to $TMPDIR or <data_dir>/<dataset>/terashuf_tmp.",
+    )
 
     args = parser.parse_args()
 
-    main(args.dataset, args.memory, args.data_dir, args.seed, args.nchunks)
+    main(
+        args.dataset,
+        args.memory,
+        args.data_dir,
+        args.seed,
+        args.nchunks,
+        args.shuffle_tmp_dir,
+    )
