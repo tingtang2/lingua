@@ -97,12 +97,38 @@ def normalize_lm_eval_tasks(tasks):
     if not isinstance(tasks, list) or not any(isinstance(task, dict) for task in tasks):
         return tasks
 
-    # lm-eval 0.4.12 treats top-level dict task specs as full inline task configs.
-    # Wrapping them in a temporary group preserves the intended "registered task + overrides" behavior.
-    return {
-        "group": "lingua_eval",
-        "task": tasks,
-    }
+    # lm-eval 0.4.12 misinterprets top-level dict task specs as inline configs.
+    # Resolve registered task/group/tag entries ourselves so per-task overrides still work.
+    from lm_eval.tasks.manager import TaskManager
+
+    task_manager = TaskManager()
+    normalized_tasks = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            normalized_tasks.append(task)
+            continue
+
+        entry_name = task.get("task") or task.get("group")
+        if not isinstance(entry_name, str):
+            normalized_tasks.append(task)
+            continue
+
+        entry = task_manager._entry(entry_name)
+        if entry is None:
+            normalized_tasks.append(task)
+            continue
+
+        built = task_manager._factory.build(
+            entry,
+            overrides=task,
+            registry=task_manager.task_index,
+        )
+        if isinstance(built, list):
+            normalized_tasks.extend(built)
+        else:
+            normalized_tasks.append(built)
+
+    return normalized_tasks
 
 
 class MockAccelerator:
