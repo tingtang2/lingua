@@ -15,6 +15,7 @@ import torch
 from apps.main.eval import (
     ValidationArgs,
     EvalHarnessLM,
+    normalize_lm_eval_tasks,
     LMHarnessArgs,
     eval_on_val,
 )
@@ -74,7 +75,9 @@ def launch_eval(cfg: EvalArgs):
     generator = PackedRNNGenerator(cfg.generator, model, tokenizer)
 
     wrap = EvalHarnessLM(generator)
-    results = simple_evaluate(wrap, **asdict(cfg.harness))
+    harness_args = asdict(cfg.harness)
+    harness_args["tasks"] = normalize_lm_eval_tasks(harness_args["tasks"])
+    results = simple_evaluate(wrap, **harness_args)
     val_results =  None
     if cfg.validation:
         val_results = eval_on_val(generator, cfg.validation, train_cfg)

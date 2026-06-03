@@ -48,6 +48,8 @@ class WandbArgs:
 class LoggingArgs:
     freq: int = 10  # Log every freq optimizer steps
     acc_freq: Optional[int] = None  # Log every acc_freq gradient accumulation steps
+    light_freq: Optional[int] = None  # Console-only lightweight log cadence in optimizer steps
+    wandb_light_freq: Optional[int] = None  # W&B-only lightweight log cadence in optimizer steps
 
     wandb: Optional[WandbArgs] = None
 

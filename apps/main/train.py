@@ -218,6 +218,13 @@ def every_n_steps(train_state, freq, acc_step=None, acc_freq=None):
     return test
 
 
+def format_eta(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def train(args: TrainArgs):
     with ExitStack() as context_stack:
         tokenizer = build_tokenizer(args.data.tokenizer.name, args.data.tokenizer.path)
@@ -343,6 +350,8 @@ def train(args: TrainArgs):
 
         nwords_since_last_log = 0
         time_last_log = timer()
+        run_wall_start = timer()
+        run_start_step = train_state.step
         gc.collect()
         while train_state.step < args.steps:
             # We constrain train_state.acc_step to be in range 0 to args.grad_acc_steps - 1
@@ -454,12 +463,35 @@ def train(args: TrainArgs):
                 xformers.profiler.step()
 
             # log metrics
-            if every_n_steps(
+            completed_run_steps = max(train_state.step - run_start_step, 0)
+            avg_step_time = (
+                (timer() - run_wall_start) / completed_run_steps
+                if completed_run_steps > 0
+                else 0.0
+            )
+            remaining_steps = max(args.steps - train_state.step, 0)
+            eta_seconds = remaining_steps * avg_step_time
+            progress_pct = 100 * train_state.step / max(args.steps, 1)
+
+            heavy_log_due = every_n_steps(
                 train_state,
                 args.logging.freq,
                 acc_step=None if args.logging.acc_freq else 0,
                 acc_freq=args.logging.acc_freq,
-            ):
+            )
+            light_log_due = (
+                train_state.acc_step == 0
+                and args.logging.light_freq is not None
+                and every_n_steps(train_state, args.logging.light_freq, acc_step=0)
+            )
+            wandb_light_due = (
+                train_state.acc_step == 0
+                and args.logging.wandb_light_freq is not None
+                and every_n_steps(train_state, args.logging.wandb_light_freq, acc_step=0)
+            )
+            loss_item = loss.item()
+
+            if heavy_log_due:
                 time_delta = timer() - time_last_log
                 wps = nwords_since_last_log / (time_delta * args.distributed.tp_size)
 
@@ -505,7 +537,7 @@ def train(args: TrainArgs):
                 )
 
                 to_sync = {}
-                to_sync["loss/out"] = loss.item()
+                to_sync["loss/out"] = loss_item
                 metrics.update(dist_mean_dict(to_sync))
 
                 if get_is_master():
@@ -515,9 +547,9 @@ def train(args: TrainArgs):
                 nwords_since_last_log = 0
                 time_last_log = timer()
                 logger.info(
-                    f"step: {train_state.step}"
+                    f"step: {train_state.step}/{args.steps}"
                     f"  acc: {train_state.acc_step}"
-                    f"  loss: {round(loss.item(),4):>7}"
+                    f"  loss: {round(loss_item,4):>7}"
                     f"  grad: {grad_norm:.2e}"
                     f"  flops: {FLOPS:.2e}"
                     f"  wps: {wps:.2e}"
@@ -526,6 +558,39 @@ def train(args: TrainArgs):
                     f"  lr: {curr_lr:.2e}"
                     f"  mem: {gpu_mem_stats.max_active_pct:.0f}%"
                     f"  pow: {gpu_mem_stats.power_draw/1000} W"
+                    f"  eta: {format_eta(eta_seconds)}"
+                    f"  done: {progress_pct:5.1f}%"
+                )
+            elif light_log_due:
+                logger.info(
+                    f"step: {train_state.step}/{args.steps}"
+                    f"  loss: {round(loss_item,4):>7}"
+                    f"  grad: {grad_norm:.2e}"
+                    f"  iter: {curr_iter_time:>7}"
+                    f"  data: {data_load_time:>5}"
+                    f"  lr: {curr_lr:.2e}"
+                    f"  eta: {format_eta(eta_seconds)}"
+                    f"  done: {progress_pct:5.1f}%"
+                )
+
+            if (
+                wandb_light_due
+                and (not heavy_log_due)
+                and get_is_master()
+                and args.logging.wandb is not None
+                and (wandb.run is not None)
+            ):
+                wandb.log(
+                    {
+                        "light/loss": loss_item,
+                        "light/grad_norm": grad_norm,
+                        "light/curr_iter_time": curr_iter_time,
+                        "light/data_load_time": data_load_time,
+                        "light/lr": curr_lr,
+                        "light/eta_seconds": eta_seconds,
+                        "light/progress_pct": progress_pct,
+                    },
+                    step=train_state.step,
                 )
 
             saved = False

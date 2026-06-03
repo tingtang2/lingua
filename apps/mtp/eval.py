@@ -14,6 +14,7 @@ import torch
 from apps.main.eval import (
     EvalArgs,
     EvalHarnessLM,
+    normalize_lm_eval_tasks,
 )
 from apps.main.generate import (
     PackedCausalTransformerGenerator,
@@ -59,7 +60,9 @@ def launch_eval(cfg: EvalArgs):
     generator = PackedCausalTransformerGenerator(cfg.generator, model, tokenizer)
 
     wrap = EvalHarnessLM(generator)
-    results = simple_evaluate(wrap, **asdict(cfg.harness))
+    harness_args = asdict(cfg.harness)
+    harness_args["tasks"] = normalize_lm_eval_tasks(harness_args["tasks"])
+    results = simple_evaluate(wrap, **harness_args)
     if get_global_rank() == 0:
         with open(Path(cfg.dump_dir) / "results.json", "w") as f:
             f.write(json.dumps(results))

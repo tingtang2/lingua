@@ -93,6 +93,18 @@ def all_dicts_same(dict_list):
     return all(d == first_dict for d in dict_list)
 
 
+def normalize_lm_eval_tasks(tasks):
+    if not isinstance(tasks, list) or not any(isinstance(task, dict) for task in tasks):
+        return tasks
+
+    # lm-eval 0.4.12 treats top-level dict task specs as full inline task configs.
+    # Wrapping them in a temporary group preserves the intended "registered task + overrides" behavior.
+    return {
+        "group": "lingua_eval",
+        "task": tasks,
+    }
+
+
 class MockAccelerator:
     def gather(self, tensor):
         l = [torch.zeros_like(tensor) for _ in range(get_world_size())]
@@ -246,7 +258,9 @@ def launch_eval(cfg: EvalArgs):
     generator = PackedHierarchicalCausalTransformerGenerator(cfg.generator, model, tokenizer, regex_pool)
 
     wrap = EvalHarnessLM(generator)
-    results = simple_evaluate(model=wrap, **asdict(cfg.harness))
+    harness_args = asdict(cfg.harness)
+    harness_args["tasks"] = normalize_lm_eval_tasks(harness_args["tasks"])
+    results = simple_evaluate(model=wrap, **harness_args)
     val_results =  None
     if cfg.validation:
         val_results = eval_on_val(generator, cfg.validation, train_cfg)
