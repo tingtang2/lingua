@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 
 from lm_eval import simple_evaluate
+from lm_eval.utils import handle_non_serializable
 
 from omegaconf import OmegaConf
 import torch
@@ -65,7 +66,7 @@ def launch_eval(cfg: EvalArgs):
     results = simple_evaluate(wrap, **harness_args)
     if get_global_rank() == 0:
         with open(Path(cfg.dump_dir) / "results.json", "w") as f:
-            f.write(json.dumps(results))
+            f.write(json.dumps(results, default=handle_non_serializable))
         logger.info(f"All evaluation results: {results['results']}")
     if cfg.metric_log_dir and get_global_rank() == 0:
         metric_log_path = Path(cfg.metric_log_dir) / "metrics.eval.jsonl"
