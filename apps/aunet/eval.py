@@ -202,57 +202,86 @@ class EvalHarnessLM(LM):
     
 
 def eval_on_val(generator, val_args: ValidationArgs, train_cfg):
-    srcs = {}
+    file_pattern = "*.val.jsonl"
+    requested_srcs = {}
     for src in val_args.sources:
         path = os.path.join(val_args.root_dir, src)
-        srcs[path] = 1.0
-    for src in train_cfg.data.sources:
-        path = os.path.join(train_cfg.data.root_dir, src)
-        srcs[path] = 1.0
+        requested_srcs[path] = 1.0
+    if val_args.use_val_from_train_src:
+        for src in train_cfg.data.sources:
+            path = os.path.join(train_cfg.data.root_dir, src)
+            requested_srcs[path] = 1.0
 
-    multi_state = init_choice_state("", srcs, 0, get_global_rank(), get_world_size(), "*.val.jsonl")
+    valid_srcs = {}
+    missing_srcs = []
+    for src, weight in requested_srcs.items():
+        if any(Path(src).glob(file_pattern)):
+            valid_srcs[src] = weight
+        else:
+            missing_srcs.append(src)
+
+    for src in missing_srcs:
+        logger.warning(
+            "Skipping validation source %s because no files matched %s",
+            src,
+            file_pattern,
+        )
+
+    if not valid_srcs:
+        logger.warning(
+            "Skipping validation because no sources contained %s shards.",
+            file_pattern,
+        )
+        return {}
+
+    multi_state = init_choice_state("", valid_srcs, 0, get_global_rank(), get_world_size(), file_pattern)
     path_to_iter = setup_sources(multi_state)
 
     max_gen_len = generator.max_gen_len
     # We temporarily lower max gen len
     generator.max_gen_len = 1
 
-    all_val_metrics = {}
-    for src in path_to_iter:
-        jsonl_iterator = path_to_iter[src]
-        texts = []
-        logger.info(f"Running validation on {src}...")
-        for step, (content, state) in enumerate(jsonl_iterator):
-            if state['current_iter'] > 0 or (val_args.max_steps is not None and step >= val_args.max_steps):
-                break
-            content_key = "text" if ("text" in content) else "content"
-            texts.append(content[content_key])
-        
-        _, loglikelihood, _ = generator.generate(texts)
+    try:
+        all_val_metrics = {}
+        for src in path_to_iter:
+            jsonl_iterator = path_to_iter[src]
+            texts = []
+            logger.info(f"Running validation on {src}...")
+            for step, (content, state) in enumerate(jsonl_iterator):
+                if state['current_iter'] > 0 or (val_args.max_steps is not None and step >= val_args.max_steps):
+                    break
+                content_key = "text" if ("text" in content) else "content"
+                texts.append(content[content_key])
 
-        metrics = defaultdict(list)
-        for i, ll in enumerate(loglikelihood):
-            tmp = ll.sum().item()
-            metrics['nll'].append(tmp)
-            metrics['nll_per_token'].append(tmp / len(ll))
-            metrics['nll_per_char'].append(tmp / len(texts[i]))
+            if not texts:
+                logger.warning("Skipping validation on %s because no examples were loaded.", src)
+                continue
 
-            metrics['avg_seqlen'].append(len(ll))
-        
-        for m in metrics:
-            metrics[m] = sum(metrics[m]) / len(metrics[m])
-        metrics.update(dist_mean_dict(metrics))
-        logger.info(f"Validation on {src} done. Metrics: {metrics}")
+            _, loglikelihood, _ = generator.generate(texts)
 
-        name = os.path.basename(src)
-        if name in all_val_metrics:
-            logger.warning(f"Duplicate source name {name}, path {src} in validation sources, renaming to {name}_1")
-            name = f"{name}_1"
-        all_val_metrics[name] = metrics
+            metrics = defaultdict(list)
+            for i, ll in enumerate(loglikelihood):
+                tmp = ll.sum().item()
+                metrics['nll'].append(tmp)
+                metrics['nll_per_token'].append(tmp / len(ll))
+                metrics['nll_per_char'].append(tmp / len(texts[i]))
 
-    generator.max_gen_len = max_gen_len
+                metrics['avg_seqlen'].append(len(ll))
 
-    return all_val_metrics
+            for m in metrics:
+                metrics[m] = sum(metrics[m]) / len(metrics[m])
+            metrics.update(dist_mean_dict(metrics))
+            logger.info(f"Validation on {src} done. Metrics: {metrics}")
+
+            name = os.path.basename(src)
+            if name in all_val_metrics:
+                logger.warning(f"Duplicate source name {name}, path {src} in validation sources, renaming to {name}_1")
+                name = f"{name}_1"
+            all_val_metrics[name] = metrics
+
+        return all_val_metrics
+    finally:
+        generator.max_gen_len = max_gen_len
 
 def launch_eval(cfg: EvalArgs):
     if not torch.distributed.is_initialized():
