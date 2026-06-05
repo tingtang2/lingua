@@ -23,8 +23,8 @@ model:
     dim: 1024
     n_layers: 8
     n_heads: 8
-    qk_norm: false
-    z_loss: false
+    qk_norm: true
+    z_loss: true
 
 data:
     root_dir: <placeholder>
@@ -45,9 +45,6 @@ checkpoint:
     dump:
         every: 100
         keep: 1
-    eval:
-        every: 100
-        keep: 1
 
 logging:
     freq: 10
@@ -58,17 +55,3 @@ logging:
         project: lingua_runs
         name: debug_run
 
-eval:
-    generator:
-        max_tokens: 8192
-        dtype: bf16
-        temperature: 1.0
-        top_p: 0.95
-    harness:
-        tasks:
-            - hellaswag
-            - piqa
-            - task: nq_open
-              num_fewshot: 5
-    validation:
-        max_steps: 100

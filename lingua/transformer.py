@@ -28,6 +28,8 @@ class InitStdFactor(Enum):
 
 @dataclass
 class BaseTransformerArgs:
+    qk_norm: bool = False
+
     dim: int = 512
     n_layers: int = 8
     head_dim: Optional[int] = None
@@ -48,12 +50,50 @@ class BaseTransformerArgs:
     max_seqlen: int = 1024
 
 
-def cross_entropy(pred, target, **kwargs):
-    return F.nll_loss(
-        F.log_softmax(pred.flatten(end_dim=-2).float(), -1),
-        target.flatten(end_dim=-1),
+def cross_entropy(pred, target, z_loss: bool = False, z_loss_weight: float = 1e-4, **kwargs):
+    logits = pred.flatten(end_dim=-2).float()
+    labels = target.flatten(end_dim=-1)
+
+    reduction = kwargs.pop("reduction", "mean")
+    ignore_index = kwargs.get("ignore_index", -100)
+
+    loss = F.nll_loss(
+        F.log_softmax(logits, -1),
+        labels,
+        reduction="none",
         **kwargs,
     )
+
+    valid = labels != ignore_index
+
+    if not z_loss:
+        if reduction == "none":
+            return loss.view_as(target)
+        if reduction == "sum":
+            return loss.sum()
+        if not torch.any(valid):
+            return loss.sum() * 0.0
+        return loss[valid].mean()
+
+    if not torch.any(valid):
+        return loss.sum() * 0.0
+    if not torch.any(valid):
+        return loss.sum() * 0.0
+
+    base_loss = loss[valid]
+    if reduction == "sum":
+        base_loss = base_loss.sum()
+    else:
+        base_loss = base_loss.mean()
+
+    log_z = torch.logsumexp(logits, dim=-1)
+    z_term = log_z[valid].square()
+    if reduction == "sum":
+        z_term = z_term.sum()
+    else:
+        z_term = z_term.mean()
+
+    return base_loss + z_loss_weight * z_term
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int, dim: int) -> torch.Tensor:
@@ -311,6 +351,7 @@ class Attention(nn.Module):
         n_heads: int,
         n_kv_heads: int,
         rope_theta: float,
+        args: BaseTransformerArgs,
     ):
         super().__init__()
 
@@ -344,6 +385,13 @@ class Attention(nn.Module):
             bias=False,
         )
 
+        if args.qk_norm:
+            self.q_norm = RMSNorm(head_dim, eps=args.norm_eps)
+            self.k_norm = RMSNorm(head_dim, eps=args.norm_eps)
+        else:
+            self.q_norm = None
+            self.k_norm = None
+
     def forward(
         self,
         x: torch.Tensor,
@@ -363,6 +411,11 @@ class Attention(nn.Module):
         xq = xq.view(bsz, seq_len, self.n_heads, self.head_dim)
         xk = xk.view(bsz, seq_len, self.n_kv_heads, self.head_dim)
         xv = xv.view(bsz, seq_len, self.n_kv_heads, self.head_dim)
+
+        if self.q_norm is not None:
+            xq = self.q_norm(xq)
+        if self.k_norm is not None:
+            xk = self.k_norm(xk)
 
         xq, xk = apply_rotary_emb(xq, xk, 1, freq_cis[0:seq_len])
 
@@ -409,6 +462,11 @@ class Attention(nn.Module):
 
     def reset_parameters(self, init_std=None, factor=1.0):
         init_std = init_std or (self.dim ** (-0.5))
+
+        if self.q_norm is not None:
+            self.q_norm.reset_parameters()
+        if self.k_norm is not None:
+            self.k_norm.reset_parameters()
 
         for w in [self.wq, self.wk, self.wv]:
             nn.init.trunc_normal_(
@@ -513,6 +571,7 @@ class TransformerBlock(nn.Module):
             n_heads=self.n_heads,
             n_kv_heads=self.n_kv_heads,
             rope_theta=args.rope_theta,
+            args=args,
         )
         self.feed_forward = FeedForward(
             dim=args.dim,

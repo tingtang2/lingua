@@ -67,6 +67,7 @@ class LMTransformerArgs(BaseTransformerArgs):
 
     vocab_size: int = -1
     weight_tying: bool = False
+    z_loss: bool = False
 
     sliding_window: Optional[int] = None
 
@@ -76,6 +77,7 @@ class LMTransformer(BaseTransformer):
         super().__init__(args)
         self.weight_tying = args.weight_tying
         self.sliding_window = args.sliding_window
+        self.z_loss = args.z_loss
 
         assert args.vocab_size > 0
 
@@ -114,7 +116,7 @@ class LMTransformer(BaseTransformer):
 
         logits = self.output(self.norm(h))
         if target is not None:
-            return cross_entropy(logits, target)
+            return cross_entropy(logits, target, z_loss=self.z_loss)
         else:
             return logits
 
