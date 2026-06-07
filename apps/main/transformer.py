@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -101,6 +101,7 @@ class LMTransformer(BaseTransformer):
         tok_idx: Optional[torch.Tensor] = None,
         mask: Optional[Union[BlockMask, AttentionBias, torch.Tensor, str]] = None,
         attn_impl: str = "sdpa",
+        return_stats: bool = False,
     ):
         bsz, seqlen = token_values.shape
 
@@ -116,7 +117,10 @@ class LMTransformer(BaseTransformer):
 
         logits = self.output(self.norm(h))
         if target is not None:
-            return cross_entropy(logits, target, z_loss=self.z_loss)
+            loss = cross_entropy(logits, target, z_loss=self.z_loss)
+            if return_stats:
+                return loss, {"logits_mean": logits.float().mean().detach()}
+            return loss
         else:
             return logits
 

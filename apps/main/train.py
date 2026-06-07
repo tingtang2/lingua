@@ -421,7 +421,7 @@ def train(args: TrainArgs):
                     next(model.parameters()).grad is None
                 ), "Probe model shouldn't have grads at this point"
 
-            loss = model(input_ids, labels)
+            loss, model_stats = model(input_ids, labels, return_stats=True)
 
             if args.grad_acc_steps > 1:
                 model.set_requires_gradient_sync(train_state.acc_step == 0)
@@ -490,6 +490,7 @@ def train(args: TrainArgs):
                 and every_n_steps(train_state, args.logging.wandb_light_freq, acc_step=0)
             )
             loss_item = loss.item()
+            logits_mean = model_stats["logits_mean"].item()
 
             if heavy_log_due:
                 time_delta = timer() - time_last_log
@@ -538,6 +539,7 @@ def train(args: TrainArgs):
 
                 to_sync = {}
                 to_sync["loss/out"] = loss_item
+                to_sync["model/logits_mean"] = logits_mean
                 metrics.update(dist_mean_dict(to_sync))
 
                 if get_is_master():
@@ -556,6 +558,7 @@ def train(args: TrainArgs):
                     f"  iter: {curr_iter_time:>7}"
                     f"  data: {data_load_time:>5}"
                     f"  lr: {curr_lr:.2e}"
+                    f"  logit: {logits_mean:>7.4f}"
                     f"  mem: {gpu_mem_stats.max_active_pct:.0f}%"
                     f"  pow: {gpu_mem_stats.power_draw/1000} W"
                     f"  eta: {format_eta(eta_seconds)}"
@@ -569,6 +572,7 @@ def train(args: TrainArgs):
                     f"  iter: {curr_iter_time:>7}"
                     f"  data: {data_load_time:>5}"
                     f"  lr: {curr_lr:.2e}"
+                    f"  logit: {logits_mean:>7.4f}"
                     f"  eta: {format_eta(eta_seconds)}"
                     f"  done: {progress_pct:5.1f}%"
                 )
@@ -587,6 +591,7 @@ def train(args: TrainArgs):
                         "light/curr_iter_time": curr_iter_time,
                         "light/data_load_time": data_load_time,
                         "light/lr": curr_lr,
+                        "light/logits_mean": logits_mean,
                         "light/eta_seconds": eta_seconds,
                         "light/progress_pct": progress_pct,
                     },
