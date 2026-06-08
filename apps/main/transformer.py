@@ -107,15 +107,12 @@ class LMTransformer(BaseTransformer):
     def chunked_output_loss(self, hidden, target, return_stats: bool = False):
         weight = self.output_weight()
         if isinstance(weight, DTensor):
-            logger.warning(
-                "vocab_chunk_size is set, but chunked vocab loss is not supported with DTensor output weights; falling back to full logits."
-            )
-            logits = self.output(hidden)
-            loss = cross_entropy(logits, target, z_loss=self.z_loss)
-            stats = {}
-            if return_stats:
-                stats["logits_mean"] = logits.float().mean().detach()
-            return loss, stats
+            # FSDP shards the LM-head weight across ranks, but each rank still owns a different
+            # batch. Gather the full weight and chunk over vocab locally to avoid materializing
+            # the full logits tensor while keeping the loss correct.
+            world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+            weight = weight.to_local() if world_size == 1 else weight.full_tensor()
+            weight = weight.to(dtype=hidden.dtype)
 
         chunk_size = self.vocab_chunk_size
         if chunk_size is None or chunk_size <= 0:
