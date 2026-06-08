@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 from dataclasses import dataclass
+import logging
 from typing import Dict, Optional, Tuple, Union
 
 import torch
@@ -24,6 +25,8 @@ from lingua.transformer import (
     TiedLinear,
     cross_entropy,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def create_causal_mask(seqlen, attn_impl, sliding_window):
@@ -69,6 +72,7 @@ class LMTransformerArgs(BaseTransformerArgs):
     weight_tying: bool = False
     z_loss: bool = False
     mu_centering: bool = False
+    vocab_chunk_size: Optional[int] = None
 
     sliding_window: Optional[int] = None
 
@@ -80,6 +84,7 @@ class LMTransformer(BaseTransformer):
         self.sliding_window = args.sliding_window
         self.z_loss = args.z_loss
         self.mu_centering = args.mu_centering
+        self.vocab_chunk_size = args.vocab_chunk_size
 
         assert args.vocab_size > 0
 
@@ -98,6 +103,76 @@ class LMTransformer(BaseTransformer):
 
     def output_weight(self):
         return self.tok_embeddings.weight if self.weight_tying else self.output.weight
+
+    def chunked_output_loss(self, hidden, target, return_stats: bool = False):
+        weight = self.output_weight()
+        if isinstance(weight, DTensor):
+            logger.warning(
+                "vocab_chunk_size is set, but chunked vocab loss is not supported with DTensor output weights; falling back to full logits."
+            )
+            logits = self.output(hidden)
+            loss = cross_entropy(logits, target, z_loss=self.z_loss)
+            stats = {}
+            if return_stats:
+                stats["logits_mean"] = logits.float().mean().detach()
+            return loss, stats
+
+        chunk_size = self.vocab_chunk_size
+        if chunk_size is None or chunk_size <= 0:
+            raise ValueError(f"vocab_chunk_size must be a positive integer, got {chunk_size}")
+        chunk_size = min(chunk_size, weight.shape[0])
+
+        flat_hidden = hidden.reshape(-1, hidden.shape[-1])
+        labels = target.reshape(-1)
+        ignore_index = -100
+        valid = labels != ignore_index
+        has_valid = bool(valid.any().item())
+
+        log_z = None
+        target_logits = None
+        total_logit_sum = None
+        total_logit_count = 0
+
+        for start in range(0, weight.shape[0], chunk_size):
+            end = min(start + chunk_size, weight.shape[0])
+            chunk_logits = nn.functional.linear(flat_hidden, weight[start:end]).float()
+
+            if return_stats:
+                if total_logit_sum is None:
+                    total_logit_sum = chunk_logits.detach().sum(dtype=torch.float64)
+                else:
+                    total_logit_sum = total_logit_sum + chunk_logits.detach().sum(dtype=torch.float64)
+                total_logit_count += chunk_logits.numel()
+
+            chunk_log_z = torch.logsumexp(chunk_logits, dim=-1)
+            log_z = chunk_log_z if log_z is None else torch.logaddexp(log_z, chunk_log_z)
+
+            if target_logits is None:
+                target_logits = torch.zeros_like(chunk_log_z)
+
+            if has_valid:
+                in_chunk = valid & (labels >= start) & (labels < end)
+                if bool(in_chunk.any().item()):
+                    rows = in_chunk.nonzero(as_tuple=False).squeeze(-1)
+                    contribution = torch.zeros_like(chunk_log_z)
+                    contribution[rows] = chunk_logits[rows, labels[rows] - start]
+                    target_logits = target_logits + contribution
+
+        if log_z is None or target_logits is None:
+            raise RuntimeError("Failed to compute chunked vocab loss because no vocab chunks were processed.")
+
+        if not has_valid:
+            loss = log_z.sum() * 0.0
+        else:
+            base_loss = (log_z[valid] - target_logits[valid]).mean()
+            if self.z_loss:
+                base_loss = base_loss + 1e-4 * log_z[valid].square().mean()
+            loss = base_loss
+
+        stats = {}
+        if return_stats:
+            stats["logits_mean"] = (total_logit_sum / total_logit_count).to(torch.float32)
+        return loss, stats
 
     def apply_mu_centering(self):
         with torch.no_grad():
@@ -146,7 +221,14 @@ class LMTransformer(BaseTransformer):
 
         h = super().forward(h, tok_idx=tok_idx, mask=mask, attn_impl=attn_impl)
 
-        logits = self.output(self.norm(h))
+        h = self.norm(h)
+        if target is not None and self.vocab_chunk_size is not None:
+            loss, stats = self.chunked_output_loss(h, target, return_stats=return_stats)
+            if return_stats:
+                return loss, stats
+            return loss
+
+        logits = self.output(h)
         if target is not None:
             loss = cross_entropy(logits, target, z_loss=self.z_loss)
             if return_stats:

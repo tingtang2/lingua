@@ -30,6 +30,7 @@ model:
     qk_norm: true
     z_loss: true
     mu_centering: false
+    vocab_chunk_size: null
 
 data:
     root_dir: ${oc.env:LINGUA_DATA_ROOT}

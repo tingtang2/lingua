@@ -1,15 +1,17 @@
 # Template config, need to change dump_dir, data.root_dir and data.tokenizer.path
 
 dump_dir: ${oc.env:LINGUA_DUMP_DIR}
-name: "debug_qk_norm_mu_centering"
-steps: 1000
+name: "spike_run"
+steps: 112000
 probe_freq: 100
 seed: 777
 optim:
-    lr: 3e-4
-    warmup: 2000
-    lr_min_ratio: 0.000001
-    clip: 10.0
+    lr: 0.15
+    warmup: 11200
+    scheduler: cosine
+    cycle_length: 2.0
+    lr_min_ratio: 0.0
+    clip: 1.0
     lm_head:
         type: null
         lr: null
@@ -27,22 +29,23 @@ model:
     dim: 1024
     n_layers: 8
     n_heads: 8
-    qk_norm: true
+    qk_norm: false
     z_loss: false
-    mu_centering: true
-    vocab_chunk_size: null
+    mu_centering: false
+    vocab_chunk_size: 4096
 
 data:
     root_dir: ${oc.env:LINGUA_DATA_ROOT}
     sources:
         fineweb_edu_10bt_shuffled: 1.0
-    batch_size: 32
-    prefetch_size: 64
+    batch_size: 16
+    prefetch_size: 512
     seq_len: 2048
     n_views: 2
     load_async: true
     tokenizer:
-        name: bytes
+        name: tiktoken
+        path: ${oc.env:LLAMA3_TOKENIZER_PATH}
 
 profiling:
     run: true
@@ -52,8 +55,8 @@ checkpoint:
         every: 100
         keep: 1
     eval:
-        every: 100
-        keep: -1
+        every: 2000
+        keep: 1
 
 logging:
     freq: 10
@@ -62,7 +65,7 @@ logging:
     wandb:
         entity: ${oc.env:WANDB_ENTITY}
         project: lingua_runs
-        name: debug_qk_norm_mu_centering
+        name: spike_run
 
 eval:
   validation:
