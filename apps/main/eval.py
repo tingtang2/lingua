@@ -262,18 +262,73 @@ def eval_on_val(generator, val_args: ValidationArgs, train_cfg):
 
             _, loglikelihood, _ = generator.generate(texts)
 
-            metrics = defaultdict(list)
+            totals = {
+                "total_nll": 0.0,
+                "total_tokens": 0.0,
+                "total_chars": 0.0,
+                "total_sequences": 0.0,
+                "sum_nll": 0.0,
+                "sum_nll_per_token": 0.0,
+                "sum_nll_per_char": 0.0,
+                "sum_seqlen": 0.0,
+            }
             for i, ll in enumerate(loglikelihood):
-                tmp = ll.sum().item()
-                metrics['nll'].append(tmp)
-                metrics['nll_per_token'].append(tmp / len(ll))
-                metrics['nll_per_char'].append(tmp / len(texts[i]))
+                nll = -ll.sum().item()
+                token_count = len(ll)
+                char_count = len(texts[i])
 
-                metrics['avg_seqlen'].append(len(ll))
+                totals["total_nll"] += nll
+                totals["total_tokens"] += token_count
+                totals["total_chars"] += char_count
+                totals["total_sequences"] += 1
+                totals["sum_nll"] += nll
+                totals["sum_nll_per_token"] += nll / token_count
+                totals["sum_nll_per_char"] += nll / char_count
+                totals["sum_seqlen"] += token_count
 
-            for m in metrics:
-                metrics[m] = sum(metrics[m]) / len(metrics[m])
-            metrics.update(dist_mean_dict(metrics))
+            totals_tensor = torch.tensor(
+                [
+                    totals["total_nll"],
+                    totals["total_tokens"],
+                    totals["total_chars"],
+                    totals["total_sequences"],
+                    totals["sum_nll"],
+                    totals["sum_nll_per_token"],
+                    totals["sum_nll_per_char"],
+                    totals["sum_seqlen"],
+                ],
+                device=generator.device,
+                dtype=torch.float64,
+            )
+            if torch.distributed.is_initialized():
+                torch.distributed.all_reduce(totals_tensor)
+
+            (
+                total_nll,
+                total_tokens,
+                total_chars,
+                total_sequences,
+                sum_nll,
+                sum_nll_per_token,
+                sum_nll_per_char,
+                sum_seqlen,
+            ) = totals_tensor.tolist()
+
+            if total_sequences == 0 or total_tokens == 0:
+                logger.warning("Skipping validation on %s because no tokens were accumulated.", src)
+                continue
+
+            metrics = {
+                "loss": total_nll / total_tokens,
+                "nll": sum_nll / total_sequences,
+                "nll_per_token": sum_nll_per_token / total_sequences,
+                "nll_per_char": sum_nll_per_char / total_sequences,
+                "avg_seqlen": sum_seqlen / total_sequences,
+                "total_nll": total_nll,
+                "total_tokens": total_tokens,
+                "total_chars": total_chars,
+                "total_sequences": total_sequences,
+            }
             logger.info(f"Validation on {src} done. Metrics: {metrics}")
 
             name = os.path.basename(src)
@@ -305,14 +360,22 @@ def flatten_validation_metrics(val_results):
         return {}
 
     flattened = {}
+    global_total_nll = 0.0
+    global_total_tokens = 0.0
     for source_name, metrics in val_results.items():
         if not isinstance(metrics, dict):
             continue
+        source_total_nll = metrics.get("total_nll")
+        source_total_tokens = metrics.get("total_tokens")
+        if isinstance(source_total_nll, Number) and isinstance(source_total_tokens, Number):
+            global_total_nll += float(source_total_nll)
+            global_total_tokens += float(source_total_tokens)
         for metric_name, value in metrics.items():
             if isinstance(value, Number):
                 flattened[f"validation/{source_name}/{metric_name}"] = value
-                if metric_name == "nll_per_token":
-                    flattened[f"validation/{source_name}/loss"] = value
+
+    if global_total_tokens > 0:
+        flattened["validation/loss"] = global_total_nll / global_total_tokens
     return flattened
 
 
