@@ -1,7 +1,7 @@
 # Template config, need to change dump_dir, data.root_dir and data.tokenizer.path
 
 dump_dir: ${oc.env:LINGUA_DUMP_DIR}
-name: "debug_qk_norm_z_loss"
+name: "debug_qk_norm_mu_centering"
 steps: 1000
 probe_freq: 100
 seed: 777
@@ -25,7 +25,7 @@ model:
     n_heads: 8
     qk_norm: true
     z_loss: true
-    mu_centering: false
+    mu_centering: true
 
 data:
     root_dir: ${oc.env:LINGUA_DATA_ROOT}
@@ -54,5 +54,8 @@ logging:
     wandb:
         entity: ${oc.env:WANDB_ENTITY}
         project: lingua_runs
-        name: debug_qk_norm_z_loss
+        name: debug_qk_norm_mu_centering
 
+eval:
+  validation:
+    max_steps: 1000

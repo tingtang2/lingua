@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from torch.nn.attention.flex_attention import create_block_mask, BlockMask
 
-from torch.distributed._tensor import Replicate, Shard
+from torch.distributed._tensor import DTensor, Replicate, Shard
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
     RowwiseParallel,
@@ -68,6 +68,7 @@ class LMTransformerArgs(BaseTransformerArgs):
     vocab_size: int = -1
     weight_tying: bool = False
     z_loss: bool = False
+    mu_centering: bool = False
 
     sliding_window: Optional[int] = None
 
@@ -78,6 +79,7 @@ class LMTransformer(BaseTransformer):
         self.weight_tying = args.weight_tying
         self.sliding_window = args.sliding_window
         self.z_loss = args.z_loss
+        self.mu_centering = args.mu_centering
 
         assert args.vocab_size > 0
 
@@ -93,6 +95,35 @@ class LMTransformer(BaseTransformer):
                 args.vocab_size,
                 bias=False,
             )
+
+    def output_weight(self):
+        return self.tok_embeddings.weight if self.weight_tying else self.output.weight
+
+    def apply_mu_centering(self):
+        with torch.no_grad():
+            weight = self.output_weight()
+            if isinstance(weight, DTensor):
+                if any(isinstance(p, Shard) and p.dim != 0 for p in weight.placements):
+                    raise NotImplementedError(
+                        f"mu_centering expects output weights sharded along dim 0, got {weight.placements}"
+                    )
+                local_weight = weight.to_local()
+                local_sum = local_weight.float().sum(dim=0)
+                local_count = torch.tensor(
+                    local_weight.shape[0],
+                    device=local_weight.device,
+                    dtype=torch.long,
+                )
+                if torch.distributed.is_initialized():
+                    torch.distributed.all_reduce(local_sum)
+                    torch.distributed.all_reduce(local_count)
+                if local_count.item() == 0:
+                    return
+                global_mean = (local_sum / local_count).to(local_weight.dtype)
+                local_weight.sub_(global_mean)
+            else:
+                mean = weight.float().mean(dim=0).to(weight.dtype)
+                weight.sub_(mean)
 
     def forward(
         self,

@@ -25,6 +25,7 @@ model:
   n_heads: 16
   qk_norm: false
   z_loss: false
+  mu_centering: false
 
 data:
   root_dir: data/shuffled

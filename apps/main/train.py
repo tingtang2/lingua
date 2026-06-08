@@ -446,6 +446,8 @@ def train(args: TrainArgs):
                 ).item()
 
                 optimizer.step()
+                if args.model.mu_centering:
+                    model.apply_mu_centering()
                 scheduler.step()
                 optimizer.zero_grad()
                 train_state.step += 1

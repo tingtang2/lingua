@@ -27,6 +27,7 @@ model:
   n_heads: 32
   qk_norm: false
   z_loss: false
+  mu_centering: false
   rope_theta: 100_000
   ffn_dim_multiplier: 1.0
   multiple_of: 256
