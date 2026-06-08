@@ -24,7 +24,7 @@ model:
     n_layers: 8
     n_heads: 8
     qk_norm: true
-    z_loss: true
+    z_loss: false
     mu_centering: true
 
 data:
