@@ -1,14 +1,24 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from functools import partial
 import math
 
 import logging
+from typing import Optional
+
 from torch import nn
-from torch.optim import AdamW, lr_scheduler
+from torch.optim import AdamW, SGD, Optimizer, lr_scheduler
 
 logger = logging.getLogger()
+
+
+@dataclass
+class LMHeadOptimArgs:
+    type: Optional[str] = None
+    lr: Optional[float] = None
+    momentum: float = 0.9
 
 
 @dataclass
@@ -19,6 +29,7 @@ class OptimArgs:
     beta1: float = 0.9
     beta2: float = 0.95
     clip: float = 1.0
+    lm_head: LMHeadOptimArgs = field(default_factory=LMHeadOptimArgs)
 
     scheduler: str = "cosine"
     warmup: int = 2000
@@ -146,16 +157,154 @@ def build_lr_fn(args: OptimArgs, n_steps: int):
     return lr_fn
 
 
+class MultiOptimizer(Optimizer):
+    def __init__(self, optimizers):
+        self.optimizers = list(optimizers)
+        if not self.optimizers:
+            raise ValueError("MultiOptimizer requires at least one optimizer")
+
+        all_params = []
+        for optimizer in self.optimizers:
+            for group in optimizer.param_groups:
+                all_params.extend(group["params"])
+        super().__init__(all_params, defaults={})
+
+        # Reuse the underlying param group dicts so schedulers update the real optimizers.
+        self.param_groups = [
+            group for optimizer in self.optimizers for group in optimizer.param_groups
+        ]
+        self.defaults = dict(self.optimizers[0].defaults)
+        self._refresh_state()
+
+    def _refresh_state(self):
+        merged_state = defaultdict(dict)
+        for optimizer in self.optimizers:
+            merged_state.update(optimizer.state)
+        self.state = merged_state
+
+    def step(self, closure=None):
+        loss = None
+        for idx, optimizer in enumerate(self.optimizers):
+            curr_loss = optimizer.step(closure if idx == 0 else None)
+            if loss is None:
+                loss = curr_loss
+        self._refresh_state()
+        return loss
+
+    def zero_grad(self, set_to_none: bool = True):
+        for optimizer in self.optimizers:
+            optimizer.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        return {
+            "optimizers": [optimizer.state_dict() for optimizer in self.optimizers],
+        }
+
+    def load_state_dict(self, state_dict):
+        optimizer_states = state_dict.get("optimizers")
+        if optimizer_states is None:
+            raise ValueError("Expected MultiOptimizer state_dict to contain 'optimizers'")
+        if len(optimizer_states) != len(self.optimizers):
+            raise ValueError(
+                f"Expected {len(self.optimizers)} optimizer states, got {len(optimizer_states)}"
+            )
+        for optimizer, optimizer_state in zip(self.optimizers, optimizer_states):
+            optimizer.load_state_dict(optimizer_state)
+        self.param_groups = [
+            group for optimizer in self.optimizers for group in optimizer.param_groups
+        ]
+        self._refresh_state()
+
+
+def get_optimizer_for_checkpoint(optimizer):
+    return optimizer.optimizers if hasattr(optimizer, "optimizers") else optimizer
+
+
+def get_lm_head_override(args: OptimArgs):
+    lm_head_args = getattr(args, "lm_head", None)
+    if lm_head_args is None or lm_head_args.type is None:
+        return None
+
+    opt_type = lm_head_args.type.lower()
+    if opt_type not in {"adamw", "sgd"}:
+        raise ValueError(
+            f"Unknown LM-head optimizer type: {lm_head_args.type}. Expected 'adamw' or 'sgd'."
+        )
+    return lm_head_args
+
+
+def split_named_params_for_lm_head(model: nn.Module):
+    base_params = []
+    lm_head_params = []
+    lm_head_names = []
+
+    for name, param in model.named_parameters():
+        if name.startswith("output."):
+            lm_head_params.append(param)
+            lm_head_names.append(name)
+        else:
+            base_params.append(param)
+
+    return base_params, lm_head_params, lm_head_names
+
+
+def build_single_optimizer(params, args: OptimArgs, opt_type: str = "adamw", lr: Optional[float] = None, momentum: Optional[float] = None):
+    opt_type = opt_type.lower()
+    lr = args.lr if lr is None else lr
+
+    if opt_type == "adamw":
+        return AdamW(
+            params,
+            lr=lr,
+            betas=(args.beta1, args.beta2),
+            weight_decay=args.weight_decay,
+            eps=args.epsilon,
+            fused=True,  # Faster optim.step but can throw errors
+        )
+    if opt_type == "sgd":
+        return SGD(
+            params,
+            lr=lr,
+            momentum=args.beta1 if momentum is None else momentum,
+            weight_decay=args.weight_decay,
+        )
+    raise ValueError(f"Unknown optimizer type: {opt_type}")
+
+
 def build_optimizer(model: nn.Module, args: OptimArgs, n_steps: int):
     logger.info("Starting build of optimizer...")
-    optimizer = AdamW(
-        model.parameters(),
-        lr=args.lr,
-        betas=(args.beta1, args.beta2),
-        weight_decay=args.weight_decay,
-        eps=args.epsilon,
-        fused=True,  # Faster optim.step but can throw errors
-    )
+    lm_head_args = get_lm_head_override(args)
+    optimizer = None
+
+    if lm_head_args is not None:
+        base_params, lm_head_params, lm_head_names = split_named_params_for_lm_head(model)
+        if not lm_head_params:
+            logger.warning(
+                "LM-head optimizer override requested, but no separate output.* parameters were found. "
+                "If weight tying is enabled, the LM head shares embedding weights and cannot be optimized separately."
+            )
+        else:
+            lm_head_lr = args.lr if lm_head_args.lr is None else lm_head_args.lr
+            base_optimizer = build_single_optimizer(base_params, args, opt_type="adamw", lr=args.lr)
+            lm_head_optimizer = build_single_optimizer(
+                lm_head_params,
+                args,
+                opt_type=lm_head_args.type,
+                lr=lm_head_lr,
+                momentum=lm_head_args.momentum,
+            )
+            optimizer = MultiOptimizer([base_optimizer, lm_head_optimizer])
+            logger.info(
+                "Using a separate LM-head optimizer: type=%s lr=%s momentum=%s params=%d (%s)",
+                lm_head_args.type,
+                lm_head_lr,
+                lm_head_args.momentum,
+                sum(param.numel() for param in lm_head_params),
+                ", ".join(lm_head_names),
+            )
+
+    if optimizer is None:
+        optimizer = build_single_optimizer(model.parameters(), args, opt_type="adamw", lr=args.lr)
 
     # scheduler
     lr_fn = build_lr_fn(args, n_steps)

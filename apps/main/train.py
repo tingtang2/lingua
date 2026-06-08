@@ -638,6 +638,8 @@ def train(args: TrainArgs):
                 elif get_is_master():
                     if wandb.run is not None and args.logging.wandb is not None:
                         eval_args.wandb = deepcopy(args.logging.wandb)
+                        eval_args.wandb.id = wandb.run.id
+                        eval_args.wandb.resume = "allow"
                     assert args.async_eval_gpus > 0
                     logger.info(f"Launching evals on {args.async_eval_gpus} gpus")
                     with clean_env():

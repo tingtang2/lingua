@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 import json
 import logging
+from numbers import Number
 import os
 from pathlib import Path
 from lm_eval.api.instance import Instance
@@ -30,6 +31,7 @@ from lingua.distributed import (
     get_world_size,
     setup_torch_distributed,
 )
+import wandb
 
 EVAL_FOLDER_NAME = "{:010d}"
 
@@ -284,6 +286,67 @@ def eval_on_val(generator, val_args: ValidationArgs, train_cfg):
     finally:
         generator.max_gen_len = max_gen_len
 
+def flatten_harness_metrics(results):
+    if not results or "results" not in results:
+        return {}
+
+    flattened = {}
+    for task_name, task_metrics in results["results"].items():
+        if not isinstance(task_metrics, dict):
+            continue
+        for metric_name, value in task_metrics.items():
+            if isinstance(value, Number):
+                flattened[f"evals/{task_name}/{metric_name}"] = value
+    return flattened
+
+
+def flatten_validation_metrics(val_results):
+    if not val_results:
+        return {}
+
+    flattened = {}
+    for source_name, metrics in val_results.items():
+        if not isinstance(metrics, dict):
+            continue
+        for metric_name, value in metrics.items():
+            if isinstance(value, Number):
+                flattened[f"validation/{source_name}/{metric_name}"] = value
+                if metric_name == "nll_per_token":
+                    flattened[f"validation/{source_name}/loss"] = value
+    return flattened
+
+
+def maybe_log_eval_to_wandb(cfg: EvalArgs, results, val_results):
+    if get_global_rank() != 0:
+        return
+    if wandb.run is None and cfg.wandb is None:
+        return
+
+    opened_run = False
+    if wandb.run is None and cfg.wandb is not None:
+        wandb_kwargs = {
+            key: value
+            for key, value in asdict(cfg.wandb).items()
+            if value is not None
+        }
+        wandb_kwargs.setdefault("job_type", "eval")
+        wandb.init(**wandb_kwargs)
+        opened_run = True
+
+    metrics = {}
+    metrics.update(flatten_harness_metrics(results))
+    metrics.update(flatten_validation_metrics(val_results))
+    if metrics:
+        if cfg.global_step is not None:
+            wandb.log(metrics, step=cfg.global_step)
+        else:
+            wandb.log(metrics)
+        logger.info("Logged %d eval metrics to W&B", len(metrics))
+
+    if opened_run:
+        wandb.finish()
+
+
 def launch_eval(cfg: EvalArgs):
     if not torch.distributed.is_initialized():
         setup_torch_distributed(DistributedArgs())
@@ -313,35 +376,43 @@ def launch_eval(cfg: EvalArgs):
     model.eval()
     generator = PackedCausalTransformerGenerator(cfg.generator, model, tokenizer)
 
-    wrap = EvalHarnessLM(generator)
-    harness_args = asdict(cfg.harness)
-    harness_args["tasks"] = normalize_lm_eval_tasks(harness_args["tasks"])
-    results = simple_evaluate(wrap, **harness_args)
+    results = None
+    harness_args = asdict(cfg.harness) if cfg.harness is not None else {}
+    harness_tasks = harness_args.get("tasks")
+    if harness_tasks:
+        wrap = EvalHarnessLM(generator)
+        harness_args["tasks"] = normalize_lm_eval_tasks(harness_tasks)
+        results = simple_evaluate(wrap, **harness_args)
+    else:
+        logger.info("Skipping lm-eval harness because no tasks were configured.")
+
     val_results =  None
     if cfg.validation:
         val_results = eval_on_val(generator, cfg.validation, train_cfg)
     if get_global_rank() == 0:
-        with open(Path(cfg.dump_dir) / "results.json", "w") as f:
-            f.write(json.dumps(results, default=handle_non_serializable))
-        logger.info(f"All evaluation results: {results['results']}")
+        if results is not None:
+            with open(Path(cfg.dump_dir) / "results.json", "w") as f:
+                f.write(json.dumps(results, default=handle_non_serializable))
+            logger.info(f"All evaluation results: {results['results']}")
         if val_results is not None:
             with open(Path(cfg.dump_dir) / "validation.json", "w") as f:
                 f.write(json.dumps(val_results))
             logger.info(f"All validation results: {val_results}")
     if cfg.metric_log_dir and get_global_rank() == 0:
-        metric_log_path = Path(cfg.metric_log_dir) / "metrics.eval.jsonl"
-
-        logger.info(f"Writing metric logs to {metric_log_path}")
         timestamp = {
             "created_at": datetime.utcnow().isoformat(),
         }
         if cfg.global_step is not None:
             timestamp["global_step"] = cfg.global_step
-        print(
-            json.dumps(timestamp | results["results"]),
-            file=open(metric_log_path, mode="a"),
-            flush=True,
-        )
+
+        if results is not None:
+            metric_log_path = Path(cfg.metric_log_dir) / "metrics.eval.jsonl"
+            logger.info(f"Writing metric logs to {metric_log_path}")
+            print(
+                json.dumps(timestamp | results["results"]),
+                file=open(metric_log_path, mode="a"),
+                flush=True,
+            )
 
         val_log_path = Path(cfg.metric_log_dir) / "metrics.validation.jsonl"
         if val_results is not None:
@@ -350,7 +421,9 @@ def launch_eval(cfg: EvalArgs):
                 file=open(val_log_path, mode="a"),
                 flush=True,
             )
-    
+
+    maybe_log_eval_to_wandb(cfg, results, val_results)
+
     del generator
 
 

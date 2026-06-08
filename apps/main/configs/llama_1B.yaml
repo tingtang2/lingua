@@ -10,6 +10,10 @@ optim:
   warmup: 5000
   lr_min_ratio: 0.000001
   clip: 1.0
+  lm_head:
+    type: null
+    lr: null
+    momentum: 0.9
 
 distributed:
   fsdp_type: full_shard

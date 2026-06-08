@@ -1,7 +1,7 @@
 # Template config, need to change dump_dir, data.root_dir and data.tokenizer.path
 
 dump_dir: ${oc.env:LINGUA_DUMP_DIR}
-name: "debug"
+name: "debug_qk_norm_sgd_m"
 steps: 1000
 probe_freq: 100
 seed: 777
@@ -11,9 +11,9 @@ optim:
     lr_min_ratio: 0.000001
     clip: 10.0
     lm_head:
-        type: null
-        lr: null
-        momentum: 0.9
+        type: sgd
+        lr: 3e-3
+        momentum: 0.99
 
 distributed:
     fsdp_type: full_shard
@@ -27,7 +27,7 @@ model:
     dim: 1024
     n_layers: 8
     n_heads: 8
-    qk_norm: false
+    qk_norm: true
     z_loss: false
     mu_centering: false
 
@@ -52,7 +52,7 @@ checkpoint:
         keep: 1
     eval:
         every: 100
-        keep: 1
+        keep: -1
 
 logging:
     freq: 10
@@ -61,5 +61,8 @@ logging:
     wandb:
         entity: ${oc.env:WANDB_ENTITY}
         project: lingua_runs
-        name: debug_run
+        name: debug_qk_norm_sgd_m
 
+eval:
+  validation:
+    max_steps: 1000

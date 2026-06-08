@@ -34,6 +34,10 @@ from lingua.distributed import get_is_master
 
 logger = logging.getLogger("CHECKPOINT")
 
+
+def get_optimizer_for_checkpoint(optimizer):
+    return optimizer.optimizers if hasattr(optimizer, "optimizers") else optimizer
+
 FOLDER_NAME = "{:010d}"
 RE_FOLDER = r"\d{10}"
 
@@ -93,7 +97,7 @@ def load_from_checkpoint(ckpt_dir: str, model: nn.Module, optimizer: Optional[to
     
     state_dict = {}
     if optimizer is not None:
-        state_dict[model_key], state_dict[optim_key] = get_state_dict(model, optimizer)
+        state_dict[model_key], state_dict[optim_key] = get_state_dict(model, get_optimizer_for_checkpoint(optimizer))
     else:
         state_dict[model_key] = get_model_state_dict(model)
         if model_key == "": # If only loading a model directly, the key should be empty
@@ -204,7 +208,7 @@ class CheckpointManager:
         model,
         optimizer,
     ):
-        model_sd, optim_sd = get_state_dict(model, optimizer)
+        model_sd, optim_sd = get_state_dict(model, get_optimizer_for_checkpoint(optimizer))
         return {"model": model_sd, "optim": optim_sd}
 
     def save(
@@ -286,7 +290,7 @@ class CheckpointManager:
         logger.info(f"Loading from: {str(path)}")
         state_dict = self.get_state_dict(
             model=model,
-            optimizer=optimizer,
+            optimizer=get_optimizer_for_checkpoint(optimizer),
         )
         dcp.load(state_dict, checkpoint_id=path)
         logger.info("Model and optim reloaded")

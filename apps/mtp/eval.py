@@ -60,15 +60,20 @@ def launch_eval(cfg: EvalArgs):
     model.eval()
     generator = PackedCausalTransformerGenerator(cfg.generator, model, tokenizer)
 
-    wrap = EvalHarnessLM(generator)
-    harness_args = asdict(cfg.harness)
-    harness_args["tasks"] = normalize_lm_eval_tasks(harness_args["tasks"])
-    results = simple_evaluate(wrap, **harness_args)
-    if get_global_rank() == 0:
+    results = None
+    harness_args = asdict(cfg.harness) if cfg.harness is not None else {}
+    harness_tasks = harness_args.get("tasks")
+    if harness_tasks:
+        wrap = EvalHarnessLM(generator)
+        harness_args["tasks"] = normalize_lm_eval_tasks(harness_tasks)
+        results = simple_evaluate(wrap, **harness_args)
+    else:
+        logger.info("Skipping lm-eval harness because no tasks were configured.")
+    if get_global_rank() == 0 and results is not None:
         with open(Path(cfg.dump_dir) / "results.json", "w") as f:
             f.write(json.dumps(results, default=handle_non_serializable))
         logger.info(f"All evaluation results: {results['results']}")
-    if cfg.metric_log_dir and get_global_rank() == 0:
+    if cfg.metric_log_dir and get_global_rank() == 0 and results is not None:
         metric_log_path = Path(cfg.metric_log_dir) / "metrics.eval.jsonl"
 
         logger.info(f"Writing metric logs to {metric_log_path}")
