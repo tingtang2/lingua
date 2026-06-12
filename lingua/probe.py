@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-# This file from the xFormers repo is just a example of how to implement
-# probing of the activations of a model, without changing anything.
+# This file is an example of how to implement probing of the activations of a
+# model, without changing anything.
 # By default, the linear inputs/outputs/gradients are logged, as well as
 # the attention logits+entropy. It is possible to log an additional tensor, eg:
 # x = log_stats(x, "name")
@@ -34,9 +34,6 @@ from torch.utils._pytree import tree_map
 from torch.utils.module_tracker import ModuleTracker
 from torch.fx.operator_schemas import normalize_function
 from torch.nn.attention import sdpa_kernel, SDPBackend
-
-from xformers.ops import fmha
-
 
 @torch.library.custom_op("torchprobe::log", mutates_args=(), device_types=None)
 def _log(x: torch.Tensor, name: str, uid: str) -> None:
@@ -446,9 +443,6 @@ class AutoProbeD(TorchDispatchMode):
         ]:
             _, kwargs = normalize_function(func, args=args, kwargs=kwargs, normalize_to_only_use_kwargs=True)
             _compute_attn_stats_sdpa(self, path, **kwargs)
-        elif func._overloadpacket == fmha.flash.FwOp.OPERATOR:
-            _, kwargs = normalize_function(func, args=args, kwargs=kwargs, normalize_to_only_use_kwargs=True)
-            _compute_attn_stats_flash(self, path, **kwargs)
         elif func._overloadpacket == torch.ops.torchprobe.log:
             uid = args[2]
             path = self.uid_to_path.setdefault(uid, path)
@@ -498,19 +492,6 @@ seqlen = 4
 bs = 2
 
 
-class Attention1(nn.Module):
-    def forward(self, x):
-        attn_bias = fmha.attn_bias.LowerTriangularFromBottomRightMask()
-        return fmha.memory_efficient_attention(x, x, x, attn_bias=attn_bias).reshape([x.shape[0], seqlen, -1])
-
-
-class Attention2(nn.Module):
-    def forward(self, x):
-        attn_bias = fmha.attn_bias.BlockDiagonalMask.from_seqlens([seqlen] * bs).make_causal()
-        xr = x.reshape([1, 2 * seqlen, x.shape[2], x.shape[3]])
-        return fmha.memory_efficient_attention(xr, xr, xr, attn_bias=attn_bias).reshape([x.shape[0], seqlen, -1])
-
-
 class AttentionSDPA(nn.Module):
     def __init__(self):
         super().__init__()
@@ -538,34 +519,15 @@ class Model(nn.Module):
         )
         self.q_proj = nn.Linear(d, d, bias=False)
         self.trunk.compile()
-        self.attn1 = Attention1()
-        self.attn2 = Attention2()
         self.attnSDPA = AttentionSDPA()
         self.attnSDPAflash = AttentionSDPAFlash()
 
     def forward(self, x):
         B, nHeads, D = x.shape[0], d // 64, 64
         x = self.q_proj(x).reshape([B, seqlen, nHeads, D])
-        x = self.attn1(x) + self.attn2(x) + self.attnSDPA(x) + self.attnSDPAflash(x)
+        x = self.attnSDPA(x) + self.attnSDPAflash(x)
         x = log_stats(x, "attns_out")
         return self.head(self.trunk(x))
-
-
-def test_masking() -> None:
-    q_seqlen = [1, 1, 14, 12]
-    kv_seqlen = [2, 2, 14, 18]
-    attn_bias = fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(q_seqlen, kv_seqlen).make_causal_from_bottomright()
-    logits = torch.randn([1, 1, sum(q_seqlen), sum(kv_seqlen)], dtype=torch.float32, device="cuda")
-    bias = attn_bias.materialize(logits.shape, dtype=logits.dtype, device=logits.device)
-    logits_masked = logits.clone()
-    _mask_attn_logits(
-        logits_masked,
-        list(range(logits.shape[2])),
-        causal=True,
-        cu_seqlens_q=attn_bias.q_seqinfo.seqstart,
-        cu_seqlens_k=attn_bias.k_seqinfo.seqstart,
-    )
-    assert (logits + bias == logits_masked).all().item()
 
 
 def test_toy_model() -> None:

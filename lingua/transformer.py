@@ -7,7 +7,6 @@ from typing import Optional, Union, Tuple
 import torch
 from torch import nn
 from torch.nn import functional as F
-from xformers.ops import fmha, AttentionBias
 from torch.nn.attention.flex_attention import (
     BlockMask,
     flex_attention,
@@ -397,7 +396,7 @@ class Attention(nn.Module):
         x: torch.Tensor,
         freq_cis: torch.Tensor,
         tok_idx: Optional[torch.Tensor] = None,
-        mask: Optional[Union[BlockMask, AttentionBias, str]] = None,
+        mask: Optional[Union[BlockMask, torch.Tensor, str]] = None,
         attn_impl: str = "sdpa",
     ) -> torch.Tensor:
         # B S D
@@ -433,16 +432,11 @@ class Attention(nn.Module):
             output = flex_attention_comp(xq, xk, xv, block_mask=mask)
             output = output.transpose(1, 2).contiguous()  # B H S D -> B S H D
 
-        elif attn_impl == "fmha":
-            assert mask is None or isinstance(mask, AttentionBias)
-            output = fmha.memory_efficient_attention(xq, xk, xv, attn_bias=mask)
-            # This uses B S H D instead of B H S D of pytorch
-
         elif attn_impl == "sdpa":
             xq, xk, xv = map(lambda e: e.transpose(1, 2), (xq, xk, xv))
             assert mask is None or isinstance(mask, (str, torch.Tensor))
             is_causal = (mask == "causal") if isinstance(mask, str) else False
-            mask = mask if isinstance(mask, torch.Tensor) else None
+            mask = mask.to(device=xq.device) if isinstance(mask, torch.Tensor) else None
             output = F.scaled_dot_product_attention(
                 xq,
                 xk,
@@ -587,7 +581,7 @@ class TransformerBlock(nn.Module):
         x: torch.Tensor,
         freq_cis: torch.Tensor,
         tok_idx: Optional[torch.Tensor] = None,
-        mask: Optional[Union[BlockMask, AttentionBias, str]] = None,
+        mask: Optional[Union[BlockMask, torch.Tensor, str]] = None,
         attn_impl: str = "sdpa",
     ) -> torch.Tensor:
 
@@ -630,7 +624,7 @@ class BaseTransformer(nn.Module):
         self,
         h,
         tok_idx: Optional[torch.Tensor] = None,
-        mask: Optional[Union[BlockMask, AttentionBias, str]] = None,
+        mask: Optional[Union[BlockMask, torch.Tensor, str]] = None,
         attn_impl: str = "sdpa",
     ):
 

@@ -10,7 +10,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn.attention.flex_attention import BlockMask
-from xformers.ops.fmha import AttentionBias
 
 from apps.aunet.index_matmul import IndexedMatMul
 
@@ -215,15 +214,15 @@ class CausalTransformer(BaseTransformer):
         self,
         h: torch.Tensor,
         tok_idx: Optional[torch.Tensor] = None,
-        mask: Optional[Union[BlockMask, AttentionBias, torch.Tensor, str]] = None,
-        attn_impl: str = "fmha",
+        mask: Optional[Union[BlockMask, torch.Tensor, str]] = None,
+        attn_impl: str = "sdpa",
     ):
         bsz, seqlen, dim = h.shape
 
         mask = (
             mask
             if mask is not None
-            else create_causal_mask(seqlen, "fmha", self.sliding_window)
+            else create_causal_mask(seqlen, attn_impl, self.sliding_window)
         )
 
         return super().forward(h, tok_idx=tok_idx, mask=mask, attn_impl=attn_impl)
@@ -538,11 +537,11 @@ class HierarchicalTransformer(nn.Module):
 
         it = zip(self.encoders, self.transitions, masks)
         for i, (encoder, trans, mask) in enumerate(it):
-            x = encoder(x, attn_impl="fmha")
+            x = encoder(x, attn_impl="sdpa")
             residuals.append(x)
             x = trans.down(x, mask, encoder.rope_embeddings.freqs_cis)
 
-        x = self.trunk(x, attn_impl="fmha")
+        x = self.trunk(x, attn_impl="sdpa")
 
         it = list(
             zip(
@@ -558,7 +557,7 @@ class HierarchicalTransformer(nn.Module):
             x = trans.up(x, res, mask, decoder.rope_embeddings.freqs_cis)
             if add_res:
                 x = res + x
-            x = decoder(x, attn_impl="fmha")
+            x = decoder(x, attn_impl="sdpa")
 
         logits = self.vocab(self.vocab_norm(x))
         loss = cross_entropy(logits, target)

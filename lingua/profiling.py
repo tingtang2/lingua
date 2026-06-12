@@ -5,17 +5,11 @@ import contextlib
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import torch
 import torch.distributed
 import logging
 
-from torch.profiler.profiler import profile
-import xformers.profiler
-from xformers.profiler import (
-    MemSnapshotsProfiler,
-    PyTorchProfiler,
-)
-
-from lingua.distributed import get_is_master
+from lingua.distributed import get_global_rank, get_is_master
 
 import wandb
 
@@ -56,48 +50,49 @@ def perfetto_to_html(json_file, html_file):
         output_file.write(string.Template(tmpl).substitute(sub))
 
 
-class PyTorchProfilerWandb(PyTorchProfiler):
-    def __init__(self, main_profiler) -> None:
-        self.main_profiler = main_profiler
-        self.num_steps = 0
-        self.pytorch_profiler = torch.profiler.profile(
+class TorchProfiler:
+    def __init__(self, output_dir: str, config: ProfilerArgs) -> None:
+        self.output_dir = Path(output_dir)
+        self.config = config
+        self.profiler = None
+
+    def __enter__(self):
+        activities = [torch.profiler.ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+        self.profiler = torch.profiler.profile(
+            activities=activities,
+            schedule=torch.profiler.schedule(
+                wait=self.config.profile_warmup,
+                warmup=0,
+                active=self.config.profile_steps,
+                repeat=1,
+            ),
             on_trace_ready=self._on_trace,
             profile_memory=True,
             record_shapes=True,
-            # With stack gives huge profile traces
-            # and bugs out because of some non ascii
-            # character somewhere in pytorch
             with_stack=False,
             with_flops=True,
-            activities=self.ACTIVITIES,
         )
+        self.profiler.__enter__()
+        return self
 
-    def _analyze_trace(self, prof: profile):
-        logger.info("Begin analyze trace")
-        super()._analyze_trace(prof)
-        logger.info("End analyze trace")
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        assert self.profiler is not None
+        return self.profiler.__exit__(exc_type, exc_val, exc_tb)
+
+    def step(self):
+        assert self.profiler is not None
+        self.profiler.step()
 
     def _on_trace(self, prof: torch.profiler.profiler.profile) -> None:
-        super()._on_trace(prof)
+        filename = self.output_dir / f"profile_rank{get_global_rank()}.pt.trace.json"
+        prof.export_chrome_trace(str(filename))
         if get_is_master() and wandb.run is not None:
-            filename = list(
-                Path(self.main_profiler.output_dir).glob(
-                    "profile_CPU_CUDA*/*.pt.trace.json*"
-                )
-            )[0]
             html_path = str(filename).replace(".json", ".html")
             perfetto_to_html(filename, html_path)
             wandb.log({"profile_trace": wandb.Html(html_path)})
-
-
-class MemSnapshotsProfilerWandb(MemSnapshotsProfiler):
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        super().__exit__(exc_type, exc_val, exc_tb)
-        if get_is_master() and wandb.run is not None:
-            filename = list(
-                Path(self.main_profiler.output_dir).glob("memory_trace_plot/*.html")
-            )[0]
-            wandb.log({"memory_trace": wandb.Html(open(filename), inject=False)})
 
 
 @contextlib.contextmanager
@@ -114,24 +109,8 @@ def maybe_run_profiler(dump_dir, module, config: ProfilerArgs):
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
-        with xformers.profiler.profile(
-            output_dir=trace_dir,
-            module=module,
-            schedule=[
-                (
-                    MemSnapshotsProfilerWandb,
-                    config.mem_warmup,
-                    config.mem_warmup + config.mem_steps,
-                ),
-                (
-                    PyTorchProfilerWandb,
-                    config.profile_warmup,
-                    config.profile_warmup + config.profile_steps,
-                ),
-            ],
-        ) as profiler:
+        with TorchProfiler(trace_dir, config) as profiler:
             yield profiler
 
     else:
-        torch_profiler = contextlib.nullcontext()
         yield None

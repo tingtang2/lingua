@@ -125,7 +125,7 @@ Here's a quick description of the most important files and features:
  <img src="dataloader.png" width="40%"/>
 </p>
 
-- **`profiling.py`** : Small wrapper around xformers' profiler which provides automatic MFU and HFU calculation and dumps profile traces in profiling folder in your dump directory. It also has memory profiling trace. 
+- **`profiling.py`** : Small wrapper around PyTorch profiler which dumps profile traces in the profiling folder in your dump directory.
 - **`checkpoint.py`** : Manages model checkpoints. It saves model in checkpoints folder in your dump dir in .distcp format which is the new PyTorch distributed saving method. This format allows to reload the model with a different number of GPUs and with a different sharding. You can also convert those into normal PyTorch checkpoints with `torch.distributed.checkpoint.format_utils.dcp_to_torch_save` and the other way around `torch_save_to_dcp`.
 - **`args.py`** : Utilities to work with configs. 
 

@@ -32,9 +32,6 @@ from torch.utils.checkpoint import (
 )
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
-# for no recompute ops
-import xformers.ops
-
 from lingua.float8 import convert_linears_to_fp8
 
 logger = logging.getLogger()
@@ -46,11 +43,7 @@ default_no_recompute_ops = {
     torch.ops.aten._scaled_dot_product_efficient_attention.default,
     torch.ops.aten._scaled_dot_product_flash_attention.default,
     torch.ops.c10d_functional.reduce_scatter_tensor.default,
-    torch.ops.xformers_flash.flash_fwd.default,
 }
-with contextlib.suppress(AttributeError):  # ignore exception if op is missing (old xFormers)
-    default_no_recompute_ops.add(torch.ops.xformers.efficient_attention_forward_cutlass.default)
-    default_no_recompute_ops.add(torch.ops.xformers_flash3.flash_fwd.default)
 
 
 @dataclass

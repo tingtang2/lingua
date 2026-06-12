@@ -8,7 +8,6 @@ from torch import nn
 from torch.nn.attention.flex_attention import create_block_mask, BlockMask
 
 import torch.utils.checkpoint
-from xformers.ops import fmha, AttentionBias
 from lingua.transformer import (
     BaseTransformer,
     BaseTransformerArgs,
@@ -18,12 +17,10 @@ from lingua.transformer import (
 
 
 def create_causal_mask(seqlen, attn_impl, sliding_window):
-    if sliding_window is not None and attn_impl == "xformers":
-        return fmha.attn_bias.LocalAttentionFromBottomRightMask(
-            window_left=sliding_window - 1, window_right=0
-        )
-    elif attn_impl == "xformers":
-        return fmha.attn_bias.LowerTriangularMask()
+    if attn_impl == "sdpa" and sliding_window is not None:
+        q_idx = torch.arange(seqlen)[:, None]
+        kv_idx = torch.arange(seqlen)[None, :]
+        return (q_idx >= kv_idx) & (q_idx - kv_idx < sliding_window)
     elif attn_impl == "sdpa":
         return "causal"
     elif attn_impl == "flex_attention":
@@ -95,7 +92,7 @@ class LMTransformer(BaseTransformer):
         token_values: torch.Tensor,
         target: Optional[List[torch.Tensor]] = None,
         tok_idx: Optional[torch.Tensor] = None,
-        mask: Optional[Union[BlockMask, AttentionBias, torch.Tensor, str]] = None,
+        mask: Optional[Union[BlockMask, torch.Tensor, str]] = None,
         attn_impl: str = "sdpa",
     ):
         bsz, seqlen = token_values.shape

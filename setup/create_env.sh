@@ -32,7 +32,7 @@ conda activate $env_prefix
 echo "Currently in env $(which python)"
 
 # Install packages
-pip install torch==2.7.0 xformers
+pip install torch==2.7.0
 pip install ninja
 pip install --requirement requirements.txt
 
@@ -46,5 +46,4 @@ elapsed_time=$((end_time - start_time))
 elapsed_minutes=$((elapsed_time / 60))
 
 echo "Environment $env_prefix created and all packages installed successfully in $elapsed_minutes minutes!"
-
 
