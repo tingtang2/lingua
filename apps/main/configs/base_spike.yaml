@@ -1,7 +1,7 @@
 # Template config, need to change dump_dir, data.root_dir and data.tokenizer.path
 
 dump_dir: ${oc.env:LINGUA_DUMP_DIR}
-name: "spike_run"
+name: ${oc.env:RUN_NAME,spike_run_debug}
 steps: 56000
 probe_freq: 100
 seed: 777
@@ -65,7 +65,7 @@ logging:
     wandb:
         entity: ${oc.env:WANDB_ENTITY}
         project: lingua_runs
-        name: spike_run
+        name: ${name}
 
 eval:
   validation:
