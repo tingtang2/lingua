@@ -1,0 +1,78 @@
+#python -m lingua.stool config=apps/main/configs/llama2_7B.yaml nodes=32 account=fair_amaia_cw_codegen qos=lowest
+dump_dir: ${oc.env:LINGUA_DUMP_DIR}
+name: "7b_baseline_spike"
+steps: 3840
+grad_acc_steps: 1
+probe_freq: 100
+
+seed: 777
+optim:
+  lr: 1.0e-3
+  weight_decay: 0.1
+  warmup: 192
+  lr_min_ratio: 0.0
+  clip: 1.0
+  lm_head:
+    type: null
+    lr: null
+    momentum: 0.9
+
+distributed:
+  fsdp_type: full_shard
+  compile: true
+  model_dtype: bf16
+  matmul_allow_tf32: false
+  selective_activation_checkpointing: false
+  tp_size: 1
+
+model:
+  dim: 4096
+  n_layers: 32
+  n_heads: 32
+  qk_norm: true
+  z_loss: false
+  mu_centering: false
+  vocab_chunk_size: null
+  rope_theta: 100_000
+  ffn_dim_multiplier: 1.0
+  multiple_of: 256
+
+data:
+  root_dir: ${oc.env:LINGUA_DATA_ROOT}
+  sources:
+    fineweb_edu_10bt_shuffled: 1.0
+  batch_size: 2
+  prefetch_size: 1024
+  seq_len: 4096
+  n_views: 2
+  load_async: true
+  tokenizer:
+    name: tiktoken
+    path: ${oc.env:LLAMA3_TOKENIZER_PATH}
+
+profiling:
+  run: false
+  mem_warmup: 0
+  mem_steps: 4
+  profile_warmup: 100
+  profile_steps: 4
+
+checkpoint:
+  dump:
+    every: 10000
+    keep: -1
+  eval:
+    every: 1000
+    keep: 3
+
+logging:
+  freq: 1
+  light_freq: 1
+  wandb_light_freq: 1
+  wandb:
+      entity: ${oc.env:WANDB_ENTITY}
+      project: lingua_runs
+      name: spike_run
+
+async_eval_gpus: null
+eval: null
