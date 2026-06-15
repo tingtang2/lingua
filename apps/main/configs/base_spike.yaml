@@ -52,10 +52,10 @@ profiling:
 
 checkpoint:
     dump:
-        every: 100
+        every: 1000000000
         keep: 1
     eval:
-        every: 2000
+        every: 1000000000
         keep: 1
 
 logging:
