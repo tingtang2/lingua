@@ -15,7 +15,7 @@ shift
 
 torchrun \
     --nnodes "$FLUX_JOB_NNODES" \
-    --node-rank "$RANK" \
+    --node-rank "$SLURM_NODEID" \
     --nproc-per-node 4 \
     --rdzv-endpoint "$MASTER_ADDR:$MASTER_PORT" \
     -m apps.main.train config="$CONFIG" "$@"
