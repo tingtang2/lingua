@@ -2,13 +2,14 @@
 dump_dir: ${oc.env:LINGUA_DUMP_DIR}
 name: ${oc.env:RUN_NAME,spike_run_debug}
 steps: 3840
-grad_acc_steps: 16
+grad_acc_steps: 8
 probe_freq: 100
 
 seed: 777
 optim:
-  lr: 1.0e-3
+  lr: 3.0e-3
   weight_decay: 0.1
+  cycle_length: 5.0
   warmup: 192
   lr_min_ratio: 0.0
   clip: 1.0
