@@ -8,7 +8,7 @@ probe_freq: 100
 seed: 777
 optim:
   lr: 3.0e-3
-  weight_decay: 0.1
+  weight_decay: 1e-4
   cycle_length: 5.0
   warmup: 192
   lr_min_ratio: 0.0
