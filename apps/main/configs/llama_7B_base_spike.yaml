@@ -1,8 +1,8 @@
 #python -m lingua.stool config=apps/main/configs/llama2_7B.yaml nodes=32 account=fair_amaia_cw_codegen qos=lowest
 dump_dir: ${oc.env:LINGUA_DUMP_DIR}
 name: ${oc.env:RUN_NAME,spike_run_debug}
-steps: 3840
-grad_acc_steps: 8
+steps: 1900
+grad_acc_steps: 16
 probe_freq: 100
 
 seed: 777
@@ -10,7 +10,7 @@ optim:
   lr: 9.0e-3
   weight_decay: 1e-4
   cycle_length: 20.0
-  warmup: 32
+  warmup: 95
   lr_min_ratio: 0.0
   clip: 1.0
   lm_head:
