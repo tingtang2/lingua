@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import argparse
+import json
 import os
 import shlex
 import time
@@ -66,6 +67,42 @@ def parquet_to_jsonl(dataset, work_dir, src_dir, tgt_dir, ntasks=64):
     pipeline_exec.run()
 
 
+def hf_split_to_jsonl(dataset, repo_id, config_name, split, tgt_dir, text_field="text"):
+    try:
+        from datasets import load_dataset
+    except ImportError as exc:
+        raise ImportError(
+            "Preparing this dataset requires the `datasets` package. "
+            "Install it with `pip install datasets` or recreate the Lingua env "
+            "from requirements.txt."
+        ) from exc
+
+    os.makedirs(tgt_dir, exist_ok=True)
+    output_path = os.path.join(tgt_dir, f"{dataset}.chunk.00.jsonl")
+    done_path = output_path + ".done"
+
+    if os.path.exists(done_path):
+        print(f"{output_path} already materialized. Skipping HF split conversion.")
+        return
+
+    tmp_path = output_path + ".tmp"
+    cache_dir = os.path.abspath(f"{tgt_dir}_hf_cache")
+    print(
+        f"Materializing {repo_id}"
+        f"{'/' + config_name if config_name else ''} split={split} to {output_path}"
+    )
+    print(f"Using Hugging Face cache directory: {cache_dir}")
+    hf_dataset = load_dataset(repo_id, config_name, split=split, cache_dir=cache_dir)
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        for row in hf_dataset:
+            text = row[text_field]
+            f.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
+
+    os.replace(tmp_path, output_path)
+    with open(done_path, "w", encoding="utf-8") as f:
+        f.write(f"{repo_id}\n{config_name}\n{split}\n{text_field}\n")
+
+
 def setup_terashuf(work_dir):
     terashuf_dir = os.path.join(work_dir, "terashuf")
     terashuf_executable = os.path.join(terashuf_dir, "terashuf")
@@ -98,7 +135,15 @@ def main(dataset, memory, data_dir, seed=42, nchunks=32, shuffle_tmp_dir=None):
         "fineweb_edu_10bt": "HuggingFaceFW/fineweb-edu",
         "dclm_baseline_1.0": "mlfoundations/dclm-baseline-1.0",
         "dclm_baseline_1.0_10prct": "mlfoundations/dclm-baseline-1.0",
+        "c4_en_10pct": "allenai/c4",
     }[dataset]
+    hf_split_args = {
+        "c4_en_10pct": {
+            "config_name": "en",
+            "split": "train[:10%]",
+            "text_field": "text",
+        },
+    }
     data_dir = os.path.abspath(data_dir)
     src_dir = os.path.join(data_dir, dataset)
     out_dir = f"{src_dir}_shuffled"
@@ -110,18 +155,21 @@ def main(dataset, memory, data_dir, seed=42, nchunks=32, shuffle_tmp_dir=None):
         "fineweb_edu_10bt": ".jsonl",
         "dclm_baseline_1.0": ".jsonl.zst",
         "dclm_baseline_1.0_10prct": ".jsonl.zst",
+        "c4_en_10pct": ".jsonl",
     }[dataset]
     reader_command = {
         "fineweb_edu": 'cat "$1"',
         "fineweb_edu_10bt": 'cat "$1"',
         "dclm_baseline_1.0": 'zstdcat "$1" && echo',
         "dclm_baseline_1.0_10prct": 'zstdcat "$1" && echo',
+        "c4_en_10pct": 'cat "$1"',
     }[dataset]
     allow_patterns = {
         "fineweb_edu": None,
         "fineweb_edu_10bt": "sample/10BT/*",
         "dclm_baseline_1.0": "*.jsonl.zst",
         "dclm_baseline_1.0_10prct": "global-shard_01_of_10/*.jsonl.zst",
+        "c4_en_10pct": None,
     }[dataset]
     suffix = ".jsonl"
     k_validation = 10000  # Number of lines to take from each chunk for validation
@@ -129,8 +177,11 @@ def main(dataset, memory, data_dir, seed=42, nchunks=32, shuffle_tmp_dir=None):
     # Setup terashuf
     terashuf_dir = setup_terashuf(work_dir)
 
-    # Download dataset
-    download_dataset(repo_id, src_dir, allow_patterns)
+    if dataset in hf_split_args:
+        hf_split_to_jsonl(dataset, repo_id, tgt_dir=src_dir, **hf_split_args[dataset])
+    else:
+        # Download dataset
+        download_dataset(repo_id, src_dir, allow_patterns)
 
     if "fineweb" in dataset:
         parquet_to_jsonl(dataset, work_dir, src_dir, src_dir)

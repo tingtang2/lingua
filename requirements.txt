@@ -11,5 +11,6 @@ viztracer
 lm-eval
 scipy
 pynvml
+datasets
 datatrove
 orjson
