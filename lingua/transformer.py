@@ -40,6 +40,7 @@ class BaseTransformerArgs:
     multiple_of: int = 256
 
     norm_eps: float = 1e-5
+    rmsnorm_scale: bool = True
 
     rope_theta: float = 10000.0
 
@@ -310,14 +311,17 @@ class RMSNorm(nn.Module):
 
     Attributes:
         eps (float): A small value added to the denominator for numerical stability.
-        weight (nn.Parameter): Learnable scaling parameter.
+        weight (Optional[nn.Parameter]): Learnable scaling parameter.
 
     """
 
-    def __init__(self, dim: int, eps: float = 1e-6):
+    def __init__(self, dim: int, eps: float = 1e-6, scale: bool = True):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
+        if scale:
+            self.weight = nn.Parameter(torch.ones(dim))
+        else:
+            self.register_parameter("weight", None)
 
     def _norm(self, x: torch.Tensor):
         return x * torch.rsqrt((x * x).mean(-1, keepdim=True) + self.eps)
@@ -325,10 +329,13 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor):
         x = probe.log_stats(x, "resid")
         output = self._norm(x.float())
-        return (output * self.weight.float()).type_as(x)
+        if self.weight is not None:
+            output = output * self.weight.float()
+        return output.type_as(x)
 
     def reset_parameters(self):
-        torch.nn.init.ones_(self.weight)  # type: ignore
+        if self.weight is not None:
+            torch.nn.init.ones_(self.weight)  # type: ignore
 
 class TiedLinear(nn.Module):
     def __init__(self, tied_module: nn.Module) -> None:
@@ -385,8 +392,12 @@ class Attention(nn.Module):
         )
 
         if args.qk_norm:
-            self.q_norm = RMSNorm(head_dim, eps=args.norm_eps)
-            self.k_norm = RMSNorm(head_dim, eps=args.norm_eps)
+            self.q_norm = RMSNorm(
+                head_dim, eps=args.norm_eps, scale=args.rmsnorm_scale
+            )
+            self.k_norm = RMSNorm(
+                head_dim, eps=args.norm_eps, scale=args.rmsnorm_scale
+            )
         else:
             self.q_norm = None
             self.k_norm = None
@@ -573,8 +584,10 @@ class TransformerBlock(nn.Module):
             multiple_of=args.multiple_of,
             ffn_dim_multiplier=args.ffn_dim_multiplier,
         )
-        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.attention_norm = RMSNorm(
+            args.dim, eps=args.norm_eps, scale=args.rmsnorm_scale
+        )
+        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps, scale=args.rmsnorm_scale)
 
     def forward(
         self,

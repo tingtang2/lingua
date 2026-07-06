@@ -75,7 +75,7 @@ class LMTransformer(BaseTransformer):
 
         self.tok_embeddings = torch.nn.Embedding(args.vocab_size, args.dim)
 
-        self.norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.norm = RMSNorm(args.dim, eps=args.norm_eps, scale=args.rmsnorm_scale)
 
         self.heads = nn.ModuleList()
         for _ in range(self.n_future_head):
