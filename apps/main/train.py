@@ -351,6 +351,9 @@ def train(args: TrainArgs):
         time_last_log = timer()
         run_wall_start = timer()
         run_start_step = train_state.step
+        accum_loss_sum = 0.0
+        accum_logits_mean_sum = 0.0
+        accum_count = 0
         gc.collect()
         while train_state.step < args.steps:
             # We constrain train_state.acc_step to be in range 0 to args.grad_acc_steps - 1
@@ -492,6 +495,19 @@ def train(args: TrainArgs):
             )
             loss_item = loss.item()
             logits_mean = model_stats["logits_mean"].item()
+            accum_loss_sum += loss_item
+            accum_logits_mean_sum += logits_mean
+            accum_count += 1
+
+            accum_metrics = {}
+            if train_state.acc_step == 0 and accum_count > 0:
+                accum_metrics = {
+                    "accum/loss_mean": accum_loss_sum / accum_count,
+                    "accum/logits_mean": accum_logits_mean_sum / accum_count,
+                }
+            synced_accum_metrics = (
+                dist_mean_dict(accum_metrics) if accum_metrics else {}
+            )
 
             if heavy_log_due:
                 time_delta = timer() - time_last_log
@@ -542,6 +558,7 @@ def train(args: TrainArgs):
                 to_sync["loss/out"] = loss_item
                 to_sync["model/logits_mean"] = logits_mean
                 metrics.update(dist_mean_dict(to_sync))
+                metrics.update(synced_accum_metrics)
 
                 if get_is_master():
                     metric_logger.log(metrics)
@@ -593,11 +610,17 @@ def train(args: TrainArgs):
                         "light/data_load_time": data_load_time,
                         "light/lr": curr_lr,
                         "light/logits_mean": logits_mean,
+                        **synced_accum_metrics,
                         "light/eta_seconds": eta_seconds,
                         "light/progress_pct": progress_pct,
                     },
                     step=train_state.step,
                 )
+
+            if train_state.acc_step == 0:
+                accum_loss_sum = 0.0
+                accum_logits_mean_sum = 0.0
+                accum_count = 0
 
             saved = False
             if every_n_steps(
