@@ -1,0 +1,12 @@
+python /usr/workspace/mcleish1/llnl-tools/launch_tuo.py \
+    --env_act_style=conda_activate \
+    --rccl_installdir=/collab/usr/global/tools/rccl/$SYS_TYPE/rocm-6.4.1/install/lib \
+    --output_dir=/usr/workspace/mcleish1/loss-spikes-project/lingua/runs \
+    --rocm_version=6.4.2 \
+    --run_name=7b_loss_spike_3_grad_accum_8_lr_9e_3_cycle_length_20_wd_1e_4_warmup_128_parameterless_rmsnorm \
+    --nodes=4 \
+    --minutes=1440 \
+    --repetitions=1 \
+    --launch_once_per_node=true \
+    --pass_run_name=false \
+    --custom_invocation='bash sean_shells/launcher_multi_node.sh apps/main/configs/llama_7B_base_spike.yaml' --bank=guard
