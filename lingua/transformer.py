@@ -41,6 +41,7 @@ class BaseTransformerArgs:
 
     norm_eps: float = 1e-5
     rmsnorm_scale: bool = True
+    rmsnorm_compute_dtype: str = "fp32"
 
     rope_theta: float = 10000.0
 
@@ -315,22 +316,43 @@ class RMSNorm(nn.Module):
 
     """
 
-    def __init__(self, dim: int, eps: float = 1e-6, scale: bool = True):
+    def __init__(
+        self,
+        dim: int,
+        eps: float = 1e-6,
+        scale: bool = True,
+        compute_dtype: str = "fp32",
+    ):
         super().__init__()
         self.eps = eps
+        self.compute_dtype = compute_dtype
         if scale:
             self.weight = nn.Parameter(torch.ones(dim))
         else:
             self.register_parameter("weight", None)
+
+    def _compute_input(self, x: torch.Tensor):
+        if self.compute_dtype in ("input", "model", None):
+            return x
+        if self.compute_dtype == "fp32":
+            return x.float()
+        if self.compute_dtype == "bf16":
+            return x.to(torch.bfloat16)
+        if self.compute_dtype == "fp16":
+            return x.to(torch.float16)
+        raise ValueError(
+            f"Unsupported RMSNorm compute dtype: {self.compute_dtype}. "
+            "Expected one of: fp32, bf16, fp16, input."
+        )
 
     def _norm(self, x: torch.Tensor):
         return x * torch.rsqrt((x * x).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x: torch.Tensor):
         x = probe.log_stats(x, "resid")
-        output = self._norm(x.float())
+        output = self._norm(self._compute_input(x))
         if self.weight is not None:
-            output = output * self.weight.float()
+            output = output * self.weight.to(output.dtype)
         return output.type_as(x)
 
     def reset_parameters(self):
@@ -393,10 +415,16 @@ class Attention(nn.Module):
 
         if args.qk_norm:
             self.q_norm = RMSNorm(
-                head_dim, eps=args.norm_eps, scale=args.rmsnorm_scale
+                head_dim,
+                eps=args.norm_eps,
+                scale=args.rmsnorm_scale,
+                compute_dtype=args.rmsnorm_compute_dtype,
             )
             self.k_norm = RMSNorm(
-                head_dim, eps=args.norm_eps, scale=args.rmsnorm_scale
+                head_dim,
+                eps=args.norm_eps,
+                scale=args.rmsnorm_scale,
+                compute_dtype=args.rmsnorm_compute_dtype,
             )
         else:
             self.q_norm = None
@@ -585,9 +613,17 @@ class TransformerBlock(nn.Module):
             ffn_dim_multiplier=args.ffn_dim_multiplier,
         )
         self.attention_norm = RMSNorm(
-            args.dim, eps=args.norm_eps, scale=args.rmsnorm_scale
+            args.dim,
+            eps=args.norm_eps,
+            scale=args.rmsnorm_scale,
+            compute_dtype=args.rmsnorm_compute_dtype,
         )
-        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps, scale=args.rmsnorm_scale)
+        self.ffn_norm = RMSNorm(
+            args.dim,
+            eps=args.norm_eps,
+            scale=args.rmsnorm_scale,
+            compute_dtype=args.rmsnorm_compute_dtype,
+        )
 
     def forward(
         self,

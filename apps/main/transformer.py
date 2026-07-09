@@ -87,7 +87,12 @@ class LMTransformer(BaseTransformer):
 
         self.tok_embeddings = torch.nn.Embedding(args.vocab_size, args.dim)
 
-        self.norm = RMSNorm(args.dim, eps=args.norm_eps, scale=args.rmsnorm_scale)
+        self.norm = RMSNorm(
+            args.dim,
+            eps=args.norm_eps,
+            scale=args.rmsnorm_scale,
+            compute_dtype=args.rmsnorm_compute_dtype,
+        )
 
         if args.weight_tying:
             self.output = TiedLinear(self.tok_embeddings)
