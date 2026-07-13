@@ -1,0 +1,83 @@
+# Template config, need to change dump_dir, data.root_dir and data.tokenizer.path
+
+dump_dir: ${oc.env:LINGUA_DUMP_DIR}
+name: ${oc.env:RUN_NAME,b2_stress_test}
+steps: 50000
+grad_acc_steps: 16
+seed: 0
+optim:
+    lr: 4e-4
+    weight_decay: 0.1
+    warmup: 2000
+    scheduler: cosine
+    cycle_length: 1.0
+    lr_min_ratio: 0.0
+    epsilon: 1e-15
+    clip: 1.0
+    lm_head:
+        type: null
+        lr: null
+        momentum: 0.9
+
+distributed:
+    fsdp_type: full_shard
+    compile: true
+    model_dtype: bf16
+    matmul_allow_tf32: false
+    selective_activation_checkpointing: false
+    tp_size: 1
+
+model:
+    dim: 1024
+    n_layers: 24
+    n_heads: 16
+    # Match Megatron-LLaMA's --init-method-std 0.01 initialization.
+    megatron_init: true
+    init_base_std: 0.01
+    qk_norm: false
+    rmsnorm_scale: true
+    norm_eps: 1e-6
+    rmsnorm_compute_dtype: fp32
+    z_loss: false
+    mu_centering: false
+    vocab_chunk_size: null
+
+data:
+    root_dir: ${oc.env:LINGUA_DATA_ROOT}
+    sources:
+        c4_en_10pct_shuffled: 1.0
+        # fineweb_edu_10bt_shuffled: 1.0
+    batch_size: 16
+    prefetch_size: 512
+    seq_len: 2048
+    n_views: 2
+    add_bos: true
+    add_eos: true
+    load_async: true
+    tokenizer:
+        name: sp
+        path: ${oc.env:MEGATRON_LLAMA_TOKENIZER_MODEL,data/llama-7b/tokenizer.model}
+
+profiling:
+    run: false
+
+checkpoint:
+    dump:
+        every: 1000000000
+        keep: 1
+    eval:
+        every: 1000000000
+        keep: 1
+
+logging:
+    freq: 10
+    light_freq: 1
+    wandb_light_freq: 1
+    wandb:
+        entity: ${oc.env:WANDB_ENTITY}
+        project: lingua_runs
+        name: b2_stress_test
+
+eval:
+  validation:
+    max_steps: 1000
