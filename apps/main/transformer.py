@@ -239,23 +239,37 @@ class LMTransformer(BaseTransformer):
     def reset_parameters(self, init_std=None):
         # Either use fixed base std or sqrt model dim
         super().reset_parameters()
-        init_std = init_std or (self.dim ** (-0.5))
+        if self.megatron_init:
+            # Matches Megatron's --init-method-std (0.02 is its default).
+            init_std = self.init_base_std if init_std is None else init_std
+            init_std = 0.02 if init_std is None else init_std
+        else:
+            init_std = init_std or (self.dim ** (-0.5))
         self.norm.reset_parameters()
-        nn.init.trunc_normal_(
-            self.tok_embeddings.weight,
-            mean=0.0,
-            std=init_std,
-            a=-3 * init_std,
-            b=3 * init_std,
-        )
-        if not self.weight_tying:
+        if self.megatron_init:
+            nn.init.normal_(self.tok_embeddings.weight, mean=0.0, std=init_std)
+        else:
             nn.init.trunc_normal_(
-                self.output.weight,
+                self.tok_embeddings.weight,
                 mean=0.0,
                 std=init_std,
                 a=-3 * init_std,
                 b=3 * init_std,
             )
+        if not self.weight_tying:
+            if self.megatron_init:
+                # This Megatron fork constructs the --causal-lm head as a plain
+                # nn.Linear, whose default is U(-1/sqrt(fan_in), 1/sqrt(fan_in)).
+                bound = self.dim ** (-0.5)
+                nn.init.uniform_(self.output.weight, -bound, bound)
+            else:
+                nn.init.trunc_normal_(
+                    self.output.weight,
+                    mean=0.0,
+                    std=init_std,
+                    a=-3 * init_std,
+                    b=3 * init_std,
+                )
 
 
 # Optional policy for activation checkpointing. With None, we stick to the default (defined distributed.py: default_no_recompute_ops)

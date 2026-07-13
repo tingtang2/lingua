@@ -47,6 +47,7 @@ class BaseTransformerArgs:
 
     init_base_std: Optional[float] = None
     init_std_factor: str = "disabled"
+    megatron_init: bool = False
 
     max_seqlen: int = 1024
 
@@ -493,7 +494,7 @@ class Attention(nn.Module):
 
         return output
 
-    def reset_parameters(self, init_std=None, factor=1.0):
+    def reset_parameters(self, init_std=None, factor=1.0, megatron_init=False):
         init_std = init_std or (self.dim ** (-0.5))
 
         if self.q_norm is not None:
@@ -502,21 +503,27 @@ class Attention(nn.Module):
             self.k_norm.reset_parameters()
 
         for w in [self.wq, self.wk, self.wv]:
+            if megatron_init:
+                nn.init.normal_(w.weight, mean=0.0, std=init_std)
+            else:
+                nn.init.trunc_normal_(
+                    w.weight,
+                    mean=0.0,
+                    std=init_std,
+                    a=-3 * init_std,
+                    b=3 * init_std,
+                )
+
+        if megatron_init:
+            nn.init.normal_(self.wo.weight, mean=0.0, std=init_std / factor)
+        else:
             nn.init.trunc_normal_(
-                w.weight,
+                self.wo.weight,
                 mean=0.0,
-                std=init_std,
+                std=init_std / factor,
                 a=-3 * init_std,
                 b=3 * init_std,
             )
-
-        nn.init.trunc_normal_(
-            self.wo.weight,
-            mean=0.0,
-            std=init_std / factor,
-            a=-3 * init_std,
-            b=3 * init_std,
-        )
 
 
 class FeedForward(nn.Module):
@@ -562,26 +569,32 @@ class FeedForward(nn.Module):
         output = self.w2(F.silu(x1) * x3)
         return output
 
-    def reset_parameters(self, init_std=None, factor=1.0):
+    def reset_parameters(self, init_std=None, factor=1.0, megatron_init=False):
         in_init_std = init_std or (self.dim ** (-0.5))
         out_init_std = init_std or (self.hidden_dim ** (-0.5))
         in_init_std = in_init_std
         out_init_std = out_init_std / factor
         for w in [self.w1, self.w3]:
+            if megatron_init:
+                nn.init.normal_(w.weight, mean=0.0, std=in_init_std)
+            else:
+                nn.init.trunc_normal_(
+                    w.weight,
+                    mean=0.0,
+                    std=in_init_std,
+                    a=-3 * in_init_std,
+                    b=3 * in_init_std,
+                )
+        if megatron_init:
+            nn.init.normal_(self.w2.weight, mean=0.0, std=out_init_std)
+        else:
             nn.init.trunc_normal_(
-                w.weight,
+                self.w2.weight,
                 mean=0.0,
-                std=in_init_std,
-                a=-3 * in_init_std,
-                b=3 * in_init_std,
+                std=out_init_std,
+                a=-3 * out_init_std,
+                b=3 * out_init_std,
             )
-        nn.init.trunc_normal_(
-            self.w2.weight,
-            mean=0.0,
-            std=out_init_std,
-            a=-3 * out_init_std,
-            b=3 * out_init_std,
-        )
 
 
 class TransformerBlock(nn.Module):
@@ -644,11 +657,11 @@ class TransformerBlock(nn.Module):
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
-    def init_weights(self, init_std=None, factor=1.0):
-        self.attention.reset_parameters(init_std, factor)
+    def init_weights(self, init_std=None, factor=1.0, megatron_init=False):
+        self.attention.reset_parameters(init_std, factor, megatron_init)
         self.attention_norm.reset_parameters()
 
-        self.feed_forward.reset_parameters(init_std, factor)
+        self.feed_forward.reset_parameters(init_std, factor, megatron_init)
         self.ffn_norm.reset_parameters()
 
 
@@ -658,6 +671,12 @@ class BaseTransformer(nn.Module):
         self.dim = args.dim
         self.init_base_std = args.init_base_std
         self.init_std_factor = InitStdFactor(args.init_std_factor)
+        self.megatron_init = args.megatron_init
+        if self.megatron_init and self.init_std_factor is not InitStdFactor.DISABLED:
+            raise ValueError(
+                "megatron_init supplies Megatron's global-depth scaling and cannot "
+                "be combined with init_std_factor"
+            )
         self.max_seqlen = args.max_seqlen
         self.rope_embeddings = RotaryEmbedding(
             theta=args.rope_theta,
@@ -690,11 +709,18 @@ class BaseTransformer(nn.Module):
     def init_weights(self):
         self.reset_parameters()
         for depth, layer in enumerate(self.layers):
-            factor = {
-                InitStdFactor.CURRENT_DEPTH: (2 * (depth + 1)) ** 0.5,
-                InitStdFactor.GLOBAL_DEPTH: (2 * (len(self.layers) + 1)) ** 0.5,
-                InitStdFactor.DIM_RATIO: self.dim / 4096,
-                InitStdFactor.DISABLED: 1.0,
-            }[self.init_std_factor]
+            if self.megatron_init:
+                # Megatron uses sigma / sqrt(2 * num_layers) for the attention
+                # and MLP projections that feed residual connections.
+                factor = (2 * len(self.layers)) ** 0.5
+                init_std = self.init_base_std if self.init_base_std is not None else 0.02
+            else:
+                factor = {
+                    InitStdFactor.CURRENT_DEPTH: (2 * (depth + 1)) ** 0.5,
+                    InitStdFactor.GLOBAL_DEPTH: (2 * (len(self.layers) + 1)) ** 0.5,
+                    InitStdFactor.DIM_RATIO: self.dim / 4096,
+                    InitStdFactor.DISABLED: 1.0,
+                }[self.init_std_factor]
+                init_std = self.init_base_std
 
-            layer.init_weights(self.init_base_std, factor)
+            layer.init_weights(init_std, factor, self.megatron_init)
