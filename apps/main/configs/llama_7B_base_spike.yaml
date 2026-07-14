@@ -7,8 +7,9 @@ probe_freq: 100
 
 seed: 777
 optim:
-  lr: 9.0e-3
-  weight_decay: 1e-4
+  lr: 3.0e-4
+  beta2: 0.999
+  weight_decay: 0.1
   cycle_length: 20.0
   warmup: 128
   lr_min_ratio: 0.0
@@ -30,8 +31,11 @@ model:
   dim: 4096
   n_layers: 32
   n_heads: 32
+  megatron_init: true
+  init_base_std: 0.01
   qk_norm: true
-  rmsnorm_scale: false
+  rmsnorm_scale: true
+  norm_eps: 1e-6
   z_loss: false
   mu_centering: false
   vocab_chunk_size: null
@@ -48,9 +52,13 @@ data:
   seq_len: 4096
   n_views: 2
   load_async: true
+  add_bos: true
+  add_eos: false
   tokenizer:
-    name: tiktoken
-    path: ${oc.env:LLAMA3_TOKENIZER_PATH}
+    # name: tiktoken
+    # path: ${oc.env:LLAMA3_TOKENIZER_PATH}
+    name: sp
+    path: ${oc.env:MEGATRON_LLAMA_TOKENIZER_MODEL,data/llama-7b/tokenizer.model}
 
 profiling:
   run: false
