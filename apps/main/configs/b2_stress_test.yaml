@@ -1,7 +1,7 @@
 # Template config, need to change dump_dir, data.root_dir and data.tokenizer.path
 
 dump_dir: ${oc.env:LINGUA_DUMP_DIR}
-name: ${oc.env:RUN_NAME,b2_stress_test}
+name: ${oc.env:RUN_NAME,b2_stress_test_qk_on_llama2_tokenizer}
 steps: 50000
 grad_acc_steps: 16
 seed: 0
@@ -35,7 +35,7 @@ model:
     # Match Megatron-LLaMA's --init-method-std 0.01 initialization.
     megatron_init: true
     init_base_std: 0.01
-    qk_norm: false
+    qk_norm: true
     rmsnorm_scale: true
     norm_eps: 1e-6
     rmsnorm_compute_dtype: fp32
@@ -77,7 +77,7 @@ logging:
     wandb:
         entity: ${oc.env:WANDB_ENTITY}
         project: lingua_runs
-        name: b2_stress_test
+        name: b2_stress_test_test_qk_on_llama2_tokenizer
 
 eval:
   validation:
