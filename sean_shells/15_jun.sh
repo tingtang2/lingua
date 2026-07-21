@@ -139,3 +139,29 @@ python /usr/workspace/mcleish1/llnl-tools/launch_tuo.py \
     --launch_once_per_node=true \
     --pass_run_name=false \
     --custom_invocation='bash sean_shells/launcher_multi_node.sh apps/main/configs/llama_7B_base_spike_99.yaml' --bank=guard
+
+python /usr/workspace/mcleish1/llnl-tools/launch_tuo.py \
+    --env_act_style=conda_activate \
+    --rccl_installdir=/collab/usr/global/tools/rccl/$SYS_TYPE/rocm-6.4.1/install/lib \
+    --output_dir=/usr/workspace/mcleish1/loss-spikes-project/lingua/runs \
+    --rocm_version=6.4.2 \
+    --run_name=7b_loss_spike_3_grad_accum_8_lr_3e_4_cycle_length_20_wd_1e_1_warmup_128_beta_2_95 \
+    --nodes=4 \
+    --minutes=1440 \
+    --repetitions=1 \
+    --launch_once_per_node=true \
+    --pass_run_name=false \
+    --custom_invocation='bash sean_shells/launcher_multi_node.sh apps/main/configs/llama_7B_base_spike.yaml optim.beta2=0.95' --bank=guard
+
+python /usr/workspace/mcleish1/llnl-tools/launch_tuo.py \
+    --env_act_style=conda_activate \
+    --rccl_installdir=/collab/usr/global/tools/rccl/$SYS_TYPE/rocm-6.4.1/install/lib \
+    --output_dir=/usr/workspace/mcleish1/loss-spikes-project/lingua/runs \
+    --rocm_version=6.4.2 \
+    --run_name=7b_loss_spike_3_grad_accum_16_lr_3e_4_cycle_length_20_wd_1e_1_warmup_95_beta_2_95_4M_batch \
+    --nodes=16 \
+    --minutes=1440 \
+    --repetitions=1 \
+    --launch_once_per_node=true \
+    --pass_run_name=false \
+    --custom_invocation='bash sean_shells/launcher_multi_node.sh apps/main/configs/llama_7B_base_spike_95_4M_batch.yaml' --bank=guard
